@@ -5,13 +5,9 @@ import asyncio
 import sys
 import os
 
-from autogen_ext.models.openai import OpenAIChatCompletionClient
-
 from ..config.presets import list_presets
 from ..config.settings import Settings, LLMConfig
-from ..team.debate_team import DebateTeam
 from ..output.prd_generator import PRDGenerator
-from ..output.recorder import DebateRecorder
 
 
 def parse_args() -> argparse.Namespace:
@@ -152,57 +148,82 @@ async def run_debate(
     max_rounds: int,
     output_dir: str,
 ):
-    """运行辩论"""
+    """运行辩论（使用新的辩论系统）"""
     print(f"议题: {topic}")
+    print(f"预设: {preset}")
+    print(f"最大轮数: {max_rounds}")
+    print("-" * 40)
+    print("按 Ctrl+C 可随时退出")
     print("-" * 40)
 
-    client_kwargs = llm_config.to_client_kwargs()
-    model_client = OpenAIChatCompletionClient(**client_kwargs)
-
-    settings = Settings(llm=llm_config, max_rounds=max_rounds)
-    team = DebateTeam(preset=preset, model_client=model_client, settings=settings)
-
-    recorder = DebateRecorder(output_dir=output_dir)
-    recorder.set_metadata(preset, topic)
-
     try:
+        # 创建OpenAI兼容客户端
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(
+            api_key=llm_config.api_key,
+            base_url=llm_config.base_url,
+        )
+        client.model = llm_config.model
+
+        settings = Settings(llm=llm_config, max_rounds=max_rounds)
+
+        # 使用新的辩论系统
+        from ..core.debate_loop import run_debate_stream
+
+        stream = run_debate_stream(
+            topic=topic,
+            llm_client=client,
+            preset=preset,
+            settings=settings,
+        )
+
         round_num = 0
-        stream = team.run_stream(topic)
 
         async for event in stream:
-            if hasattr(event, "messages"):
-                for msg in event.messages:
-                    speaker = getattr(msg, 'source', 'system')
-                    content = str(getattr(msg, 'content', msg))
+            event_type = event.get("type", "")
 
-                    print(f"\n[{speaker}]")
-                    print(content[:500])
+            if event_type == "debate_start":
+                print(f"\n[开始] 议题: {event['topic']}")
 
-                    role = _get_role(speaker, team)
-                    recorder.record(round_num, speaker, role, content)
+            elif event_type == "message":
+                speaker = event["speaker"]
+                role = event["role"]
+                content = event["content"]
 
-                    if "debater" in speaker.lower():
-                        round_num += 1
+                # 显示消息
+                display = content[:300] + "..." if len(content) > 300 else content
+                print(f"\n[{role} ({speaker})]:")
+                print(display)
 
-                    if "[PRD_COMPLETE]" in content:
-                        prd = content.replace("[PRD_COMPLETE]", "").strip()
-                        generator = PRDGenerator(output_dir=output_dir)
-                        filepath = generator.save_string(prd, preset, topic)
-                        print(f"\n◆ PRD已保存: {filepath}")
-                        recorder.export()
-                        return
+                # 更新轮数
+                if "debater" in speaker.lower():
+                    round_num += 1
+
+            elif event_type == "debate_complete":
+                print("\n" + "=" * 40)
+                print(f"[完成] 总轮数: {event['rounds']}")
+                print(f"[原因] {event['reason']}")
+                print("\n生成的PRD:")
+                print("-" * 40)
+                print(event["prd"])
+
+                # 保存PRD
+                generator = PRDGenerator(output_dir=output_dir)
+                filepath = generator.save_string(event["prd"], preset, topic)
+                print(f"\n◆ PRD已保存: {filepath}")
+                return
+
+    except asyncio.CancelledError:
+        print("\n\n◆ 用户中断，辩论已停止")
+        return
+
+    except KeyboardInterrupt:
+        print("\n\n◆ 用户中断，辩论已停止")
+        return
 
     except Exception as e:
         print(f"\n错误: {e}")
         raise
-
-
-def _get_role(speaker: str, team: DebateTeam) -> str:
-    if "debater1" in speaker.lower():
-        return team._preset["debater1"]["role"]
-    elif "debater2" in speaker.lower():
-        return team._preset["debater2"]["role"]
-    return "Moderator"
 
 
 if __name__ == "__main__":

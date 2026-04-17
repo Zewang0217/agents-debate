@@ -7,16 +7,16 @@
 An innovative PRD generation system where two AI agents with different perspectives debate your product requirements, ensuring more thorough and well-considered documentation.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
-![AutoGen](https://img.shields.io/badge/AutoGen-0.4+-green.svg)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ## 🎯 Features
 
 - **🤖 AI Debate System**: Two agents debate from different perspectives (PM vs Dev, Business vs Security, UX vs Architecture)
-- **🎯 Smart Moderator**: Orchestrates debates, records consensus, detects when human intervention is needed
-- **🎨 Cool TUI Interface**: Interactive terminal UI with real-time message display, statistics, and PRD preview
+- **💬 Message-based Architecture**: Agents communicate through message passing, enabling true "argument" style debates
+- **🧠 Memory System**: Each agent has persistent memory (project scope), learning from past debates
+- **🎨 Cool TUI Interface**: Dark theme with card-style message display
 - **⚙️ Flexible LLM Support**: Compatible with any OpenAI-format API (OpenAI, DeepSeek, Claude, Ollama, etc.)
-- **📝 Auto PRD Generation**: Markdown-formatted PRD output with debate history
+- **📝 Auto PRD Generation**: Markdown-formatted PRD output with debate summary
 
 ## 🚀 Quick Start
 
@@ -53,19 +53,20 @@ export OPENAI_MODEL=llama3
 ### Run
 
 ```bash
-# TUI Mode (Recommended) - Cool interactive interface
-debate-prd-tui
+# TUI Mode (Recommended) - Interactive interface
+debate-prd --tui --topic "User authentication system"
 
 # CLI Mode - Traditional command line
 debate-prd --topic "User authentication system" --preset pm_vs_dev
 ```
 
-## 📖 Documentation
+### TUI Controls
 
-- [中文文档](./README_CN.md)
-- [Usage Guide](#usage)
-- [TUI Interface](#tui-interface)
-- [Presets](#presets)
+| Key | Action |
+|-----|--------|
+| `B` | Start debate |
+| `S` | Stop debate |
+| `Q` | Quit |
 
 ## 🎭 Preset Role Combinations
 
@@ -77,82 +78,62 @@ debate-prd --topic "User authentication system" --preset pm_vs_dev
 
 ## 🖥️ TUI Interface
 
-Launch `debate-prd-tui` for an interactive terminal experience:
-
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ 🎮 Debate PRD Generator                                       │
+│ 辩论式 PRD 生成                                               │
 ├─────────────┬──────────────────────────┬────────────────────┤
-│ 🎯 Preset   │  Real-time Debate        │ 📊 Statistics      │
-│ [Select]    │  [Moderator] Starting... │ Rounds: 3/10       │
-│             │  [PM] Product value...   │ Consensus: 2       │
-│ 📝 Topic    │  [Dev] Technical cost... │ Disagreements: 1   │
-│ [Input]     │  ...                     │                    │
-│             │                          │ 📄 PRD Preview     │
-│ ▶ Start     │                          │                    │
-│ ⏸ Arbitrate │                          │                    │
-│ ⏹ Stop      │                          │                    │
+│ 状态        │  消息卡片                 │ PRD 预览           │
+│ 待开始      │  【PM】产品价值优先...     │                    │
+│ 议题        │  【Dev】技术成本考量...    │ # PRD: ...         │
+│ 轮数        │  ...                      │                    │
+│ 预设        │                           │                    │
 ├─────────────┴──────────────────────────┴────────────────────┤
-│ [S]Start [A]Arbitrate [Q]Quit [D]Dark [C]Clear               │
+│ [B]开始 [S]停止 [Q]退出                                       │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### TUI Shortcuts
+## 🛠️ Architecture
 
-| Key | Action |
-|-----|--------|
-| `S` | Start debate |
-| `A` | Request arbitration |
-| `Q` | Quit |
-| `D` | Toggle dark mode |
-| `C` | Clear chat |
-
-## ⚡ Human Intervention Triggers
-
-The moderator requests user arbitration when:
-
-1. **Round limit**: Debate exceeds N rounds without consensus
-2. **Stalemate**: No progress for consecutive rounds
-3. **Business decision**: Priority or trade-off needed
-4. **Keyword trigger**: User inputs "仲裁" (arbitrate)
-5. **Agent request**: Any agent sends `[REQUEST_ARBITRATION]`
-6. **Moderator judgment**: Moderator decides user input is needed
-
-## 🛠️ Project Structure
+Based on Claude Code's agent design patterns:
 
 ```
-agents-debate/
-├── src/debate_prd/
-│   ├── agents/           # Agent implementations
-│   │   ├── debater.py    # Debate agents
-│   │   └── moderator.py  # Moderator agent
-│   ├── team/             # Team orchestration
-│   │   └── debate_team.py
-│   ├── config/           # Configuration
-│   │   ├── presets.py    # Role presets
-│   │   ├── settings.py   # LLM & system settings
-│   │   └── prompts.py    # System prompts
-│   ├── output/           # Output generation
-│   │   ├── prd_generator.py
-│   │   └── recorder.py
-│   └── cli/              # CLI entry points
-│       ├── main.py       # Traditional CLI
-│       └── tui.py        # TUI interface
-├── examples/             # Example scripts
-├── tests/                # Unit tests
-└── pyproject.toml        # Project config
+src/debate_prd/
+├── core/                 # Core debate system
+│   ├── messaging/        # Message passing (mailbox)
+│   ├── memory/           # Agent memory (project scope)
+│   ├── spawn/            # Debater agent creation
+│   └── debate_loop.py    # Debate loop control
+├── config/               # Configuration
+│   ├── presets.py        # Role presets
+│   └── settings.py       # LLM & system settings
+├── output/               # Output generation
+│   └── prd_generator.py  # PRD generator
+└── cli/                  # CLI entry points
+    ├── main.py           # Traditional CLI
+    └── tui.py            # TUI interface
+```
+
+## 📁 Memory System
+
+Agents store memories in `.claude/agent-memory/`:
+
+```
+.claude/agent-memory/
+├── debater1_PM/MEMORY.md    # PM agent memory
+├── debater2_Dev/MEMORY.md   # Dev agent memory
 ```
 
 ## 🔧 CLI Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
+| `--tui` | Launch TUI mode | False |
 | `--api-key` | API Key | `$OPENAI_API_KEY` |
 | `--base-url` | API Base URL | `https://api.openai.com/v1` |
 | `--model` | Model name | `gpt-4o-mini` |
-| `--preset` | Role preset | Interactive select |
+| `--preset` | Role preset | `pm_vs_dev` |
 | `--topic` | Debate topic | Interactive input |
-| `--max-rounds` | Max debate rounds | 10 |
+| `--max-rounds` | Max debate rounds | `10` |
 | `--output-dir` | PRD output directory | `./output` |
 
 ## 🤝 Contributing
