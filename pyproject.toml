@@ -1,0 +1,33 @@
+[project]
+name = "debate-prd"
+version = "0.1.0"
+description = "辩论式 PRD 生成系统 - 通过两个 Agent 辩论生成产品需求文档"
+requires-python = ">=3.10"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "zewang"}]
+dependencies = [
+    "autogen-agentchat>=0.4",
+    "autogen-ext>=0.4",
+    "aioconsole>=0.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+
+[project.scripts]
+debate-prd = "debate_prd.cli.main:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
