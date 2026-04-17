@@ -9,6 +9,8 @@ authors = [{name = "zewang"}]
 dependencies = [
     "autogen-agentchat>=0.4",
     "autogen-ext>=0.4",
+    "openai>=1.0",
+    "tiktoken>=0.5",
     "aioconsole>=0.6",
     "textual>=0.47",
     "rich>=13.0",

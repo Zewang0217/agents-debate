@@ -340,7 +340,7 @@ class DebateTUIApp(App):
 
     Header {
         background: $primary;
-        color: $text-on-primary;
+        color: $text-primary;
     }
 
     Footer {
