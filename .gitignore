@@ -41,6 +41,7 @@ env/
 output/
 *.md
 !README.md
+!README_CN.md
 
 # Logs
 *.log

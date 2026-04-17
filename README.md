@@ -1,188 +1,165 @@
 # Debate PRD Generator
 
-辩论式 PRD 生成系统 - 通过两个 Agent 辩论生成产品需求文档。
+[中文文档](./README_CN.md) | English
 
-## 功能特性
+> **Generate comprehensive Product Requirement Documents through AI agent debates**
 
-- **辩论式需求分析**: 两个 Agent 代表不同立场辩论，从多角度审视需求
-- **智能中控协调**: Moderator Agent 引导流程、记录观点、检测共识
-- **灵活的用户介入**: 支持 6 种触发用户仲裁的条件
-- **自动化 PRD 生成**: 辩论结束后自动生成 Markdown 格式的 PRD
-- **自定义 LLM 配置**: 支持任意兼容 OpenAI 格式的 API（DeepSeek、Ollama 等）
+An innovative PRD generation system where two AI agents with different perspectives debate your product requirements, ensuring more thorough and well-considered documentation.
 
-## 预设角色组合
+![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
+![AutoGen](https://img.shields.io/badge/AutoGen-0.4+-green.svg)
+![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-1. **PM vs Dev**: 产品需求视角 vs 技术可行性视角
-2. **Business vs Security**: 业务增长 vs 安全合规
-3. **UX vs Architecture**: 用户体验 vs 系统架构
+## 🎯 Features
 
-## 安装
+- **🤖 AI Debate System**: Two agents debate from different perspectives (PM vs Dev, Business vs Security, UX vs Architecture)
+- **🎯 Smart Moderator**: Orchestrates debates, records consensus, detects when human intervention is needed
+- **🎨 Cool TUI Interface**: Interactive terminal UI with real-time message display, statistics, and PRD preview
+- **⚙️ Flexible LLM Support**: Compatible with any OpenAI-format API (OpenAI, DeepSeek, Claude, Ollama, etc.)
+- **📝 Auto PRD Generation**: Markdown-formatted PRD output with debate history
+
+## 🚀 Quick Start
+
+### Installation
 
 ```bash
-cd /home/zewang/PROJECTS/agents-debate
+git clone https://github.com/zewang/agents-debate.git
+cd agents-debate
 pip install -e .
 ```
 
-## LLM 配置
+### Configuration
 
-### 方式1: 环境变量（推荐）
+Create a `.env` file or set environment variables:
 
 ```bash
-# OpenAI
+# For OpenAI
 export OPENAI_API_KEY=your_openai_key
 
-# DeepSeek
+# For DeepSeek
 export OPENAI_API_KEY=your_deepseek_key
 export OPENAI_BASE_URL=https://api.deepseek.com/v1
 export OPENAI_MODEL=deepseek-chat
 
-# Ollama (本地)
+# For Ollama (local)
 export OPENAI_API_KEY=ollama
 export OPENAI_BASE_URL=http://localhost:11434/v1
 export OPENAI_MODEL=llama3
-
-# 其他兼容 OpenAI 的服务
-export OPENAI_API_KEY=your_key
-export OPENAI_BASE_URL=https://your-api.com/v1
-export OPENAI_MODEL=your_model
 ```
 
-### 方式2: 命令行参数
+### Run
 
 ```bash
-# 使用 DeepSeek
-debate-prd --base-url https://api.deepseek.com/v1 --model deepseek-chat --api-key your_key
-
-# 使用 Ollama
-debate-prd --base-url http://localhost:11434/v1 --model llama3 --api-key ollama
-
-# 指定议题和预设
-debate-prd --topic "开发用户登录系统" --preset pm_vs_dev --max-rounds 8
-```
-
-### 方式3: 代码配置
-
-```python
-from debate_prd.config.settings import LLMConfig
-
-llm_config = LLMConfig(
-    api_key="your_key",
-    base_url="https://api.deepseek.com/v1",
-    model="deepseek-chat",
-)
-```
-
-## 快速开始
-
-```bash
-# 炫酷 TUI 模式（推荐）
+# TUI Mode (Recommended) - Cool interactive interface
 debate-prd-tui
 
-# 传统命令行模式
-debate-prd
-
-# 直接指定参数
-debate-prd --topic "开发一个支付系统" --preset business_vs_security
+# CLI Mode - Traditional command line
+debate-prd --topic "User authentication system" --preset pm_vs_dev
 ```
 
-## TUI 界面
+## 📖 Documentation
 
-启动 `debate-prd-tui` 后，你将看到一个炫酷的交互式终端界面：
+- [中文文档](./README_CN.md)
+- [Usage Guide](#usage)
+- [TUI Interface](#tui-interface)
+- [Presets](#presets)
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│ 🎮 辩论式 PRD 生成系统 - 两个 Agent 辩论，生成更全面的 PRD         │
-├──────────────┬─────────────────────────────┬─────────────────────┤
-│ 🎯 角色预设  │  🎯 Moderator: 开始辩论...   │ 📊 辩论状态        │
-│              │                             │                     │
-│ [预设选择]   │  🎭 PM: 我认为产品价值...    │ 轮数: 3/10         │
-│              │                             │ 共识: 2            │
-│ 📝 辩论议题  │  🎭 Dev: 但技术实现成本...   │ 分歧: 1            │
-│ [议题输入]   │                             │                     │
-│              │  🎭 PM: 反驳观点...          │ 🎭 角色信息        │
-│ 🔗 API配置   │                             │ PM: 产品优先       │
-│ 📦 模型名称  │  🎭 Dev: 坚持技术立场...     │ Dev: 技术可行     │
-│              │                             │                     │
-│ ▶ 开始辩论   │                             │ 📄 PRD 预览        │
-│ ⏸ 请求仲裁   │                             │                     │
-│ ⏹ 停止      │                             │                     │
-├──────────────┴─────────────────────────────┴─────────────────────┤
-│ [S]开始 [A]仲裁 [Q]退出 [D]深色 [C]清空                           │
-└──────────────────────────────────────────────────────────────────┘
-```
+## 🎭 Preset Role Combinations
 
-### TUI 功能
+| Preset | Debater 1 | Debater 2 | Focus |
+|--------|-----------|-----------|-------|
+| `pm_vs_dev` | PM (Product Value) | Dev (Technical Feasibility) | Product vs Implementation |
+| `business_vs_security` | Business (Growth) | Security (Compliance) | Speed vs Safety |
+| `ux_vs_architecture` | UX (User Experience) | Arch (System Stability) | Usability vs Performance |
 
-- **左侧控制面板**: 选择预设、输入议题、控制按钮
-- **中间辩论区**: 实时显示辩论消息，自动滚动
-- **右侧状态面板**: 统计轮数、共识/分歧、PRD 预览
+## 🖥️ TUI Interface
 
-### TUI 快捷键
-
-| 键 | 功能 |
-|---|------|
-| `S` | 开始辩论 |
-| `A` | 请求仲裁 |
-| `Q` | 退出 |
-| `D` | 切换深色模式 |
-| `C` | 清空辩论区 |
-
-## 用户介入触发条件
-
-- 辩论超过 N 轮无共识
-- 双方观点根本性冲突
-- 需要业务决策（优先级、取舍）
-- 用户输入 `仲裁` 关键词
-- Agent 主动请求（`[REQUEST_ARBITRATION]` 标记）
-- Moderator 自主判断需要用户介入
-
-## 命令行参数
-
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--api-key` | API Key | 环境变量 OPENAI_API_KEY |
-| `--base-url` | API Base URL | https://api.openai.com/v1 |
-| `--model` | 模型名称 | gpt-4o-mini |
-| `--preset` | 预设角色组合 | 交互选择 |
-| `--topic` | 辩论议题 | 交互输入 |
-| `--max-rounds` | 最大辩论轮数 | 10 |
-| `--output-dir` | PRD 输出目录 | ./output |
-
-## 项目结构
+Launch `debate-prd-tui` for an interactive terminal experience:
 
 ```
-src/debate_prd/
-├── agents/          # Agent 实现
-│   ├── debater.py   # 辩论 Agent
-│   └── moderator.py # 中控 Agent
-├── team/            # 团队编排
-│   └── debate_team.py
-├── config/          # 配置和预设
-│   ├── presets.py   # 角色预设
-│   ├── settings.py  # LLM 和系统配置
-│   └── prompts.py   # 系统提示词
-├── output/          # PRD 生成
-│   ├── prd_generator.py
-│   └── recorder.py
-└── cli/             # 命令行入口
+┌──────────────────────────────────────────────────────────────┐
+│ 🎮 Debate PRD Generator                                       │
+├─────────────┬──────────────────────────┬────────────────────┤
+│ 🎯 Preset   │  Real-time Debate        │ 📊 Statistics      │
+│ [Select]    │  [Moderator] Starting... │ Rounds: 3/10       │
+│             │  [PM] Product value...   │ Consensus: 2       │
+│ 📝 Topic    │  [Dev] Technical cost... │ Disagreements: 1   │
+│ [Input]     │  ...                     │                    │
+│             │                          │ 📄 PRD Preview     │
+│ ▶ Start     │                          │                    │
+│ ⏸ Arbitrate │                          │                    │
+│ ⏹ Stop      │                          │                    │
+├─────────────┴──────────────────────────┴────────────────────┤
+│ [S]Start [A]Arbitrate [Q]Quit [D]Dark [C]Clear               │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-## 示例
+### TUI Shortcuts
 
-```bash
-# 运行基础示例
-python examples/basic_debate.py
+| Key | Action |
+|-----|--------|
+| `S` | Start debate |
+| `A` | Request arbitration |
+| `Q` | Quit |
+| `D` | Toggle dark mode |
+| `C` | Clear chat |
 
-# 自定义角色示例
-python examples/custom_roles.py
+## ⚡ Human Intervention Triggers
+
+The moderator requests user arbitration when:
+
+1. **Round limit**: Debate exceeds N rounds without consensus
+2. **Stalemate**: No progress for consecutive rounds
+3. **Business decision**: Priority or trade-off needed
+4. **Keyword trigger**: User inputs "仲裁" (arbitrate)
+5. **Agent request**: Any agent sends `[REQUEST_ARBITRATION]`
+6. **Moderator judgment**: Moderator decides user input is needed
+
+## 🛠️ Project Structure
+
+```
+agents-debate/
+├── src/debate_prd/
+│   ├── agents/           # Agent implementations
+│   │   ├── debater.py    # Debate agents
+│   │   └── moderator.py  # Moderator agent
+│   ├── team/             # Team orchestration
+│   │   └── debate_team.py
+│   ├── config/           # Configuration
+│   │   ├── presets.py    # Role presets
+│   │   ├── settings.py   # LLM & system settings
+│   │   └── prompts.py    # System prompts
+│   ├── output/           # Output generation
+│   │   ├── prd_generator.py
+│   │   └── recorder.py
+│   └── cli/              # CLI entry points
+│       ├── main.py       # Traditional CLI
+│       └── tui.py        # TUI interface
+├── examples/             # Example scripts
+├── tests/                # Unit tests
+└── pyproject.toml        # Project config
 ```
 
-## 支持的 LLM 服务
+## 🔧 CLI Options
 
-任何兼容 OpenAI API 格式的服务都可以使用：
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--api-key` | API Key | `$OPENAI_API_KEY` |
+| `--base-url` | API Base URL | `https://api.openai.com/v1` |
+| `--model` | Model name | `gpt-4o-mini` |
+| `--preset` | Role preset | Interactive select |
+| `--topic` | Debate topic | Interactive input |
+| `--max-rounds` | Max debate rounds | 10 |
+| `--output-dir` | PRD output directory | `./output` |
 
-- OpenAI (GPT-4, GPT-4o-mini, etc.)
-- DeepSeek
-- Claude (通过兼容接口)
-- 本地模型 (Ollama, LM Studio, etc.)
-- 其他云服务 (Azure OpenAI, etc.)
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.
+
+---
+
+**Made with ❤️ by zewang**
