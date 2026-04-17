@@ -10,6 +10,8 @@ dependencies = [
     "autogen-agentchat>=0.4",
     "autogen-ext>=0.4",
     "aioconsole>=0.6",
+    "textual>=0.47",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +22,7 @@ dev = [
 
 [project.scripts]
 debate-prd = "debate_prd.cli.main:main"
+debate-prd-tui = "debate_prd.cli.tui:run_tui"
 
 [build-system]
 requires = ["setuptools>=61.0"]
