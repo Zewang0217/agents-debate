@@ -21,23 +21,33 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  # 使用环境变量配置
+  # TUI模式（推荐，支持中文输入）
+  debate-prd --tui --topic "开发用户登录系统" --preset pm_vs_dev
+
+  # CLI模式（传统）
+  debate-prd --topic "用户认证系统" --preset pm_vs_dev
+
+  # 使用DeepSeek
   export OPENAI_API_KEY=your_key
   export OPENAI_BASE_URL=https://api.deepseek.com/v1
   export OPENAI_MODEL=deepseek-chat
-  debate-prd
+  debate-prd --tui
 
-  # 使用命令行参数配置
-  debate-prd --base-url https://api.deepseek.com/v1 --model deepseek-chat --api-key your_key
-
-  # 使用本地模型（如 Ollama）
-  debate-prd --base-url http://localhost:11434/v1 --model llama3 --api-key ollama
+  # 使用Ollama本地模型
+  debate-prd --tui --base-url http://localhost:11434/v1 --model llama3 --api-key ollama
 
 环境变量:
   OPENAI_API_KEY  - API Key
   OPENAI_BASE_URL - API Base URL (默认: https://api.openai.com/v1)
   OPENAI_MODEL    - 模型名称 (默认: gpt-4o-mini)
         """,
+    )
+
+    # 运行模式
+    parser.add_argument(
+        "--tui",
+        action="store_true",
+        help="启动TUI模式（支持中文输入，流式输出）",
     )
 
     # LLM 配置参数
@@ -62,21 +72,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-rounds",
         type=int,
-        default=10,
-        help="辩论最大轮数 (默认: 10)",
+        default=6,
+        help="辩论最大轮数 (默认: 6)",
     )
     parser.add_argument(
         "--preset",
         type=str,
         choices=list_presets(),
-        default=None,
-        help="预设角色组合，不指定则交互选择",
+        default="pm_vs_dev",
+        help="预设角色组合 (默认: pm_vs_dev)",
     )
     parser.add_argument(
         "--topic",
         type=str,
         default=None,
-        help="辩论议题，不指定则交互输入",
+        help="辩论议题（TUI模式必须指定，支持中文）",
     )
     parser.add_argument(
         "--output-dir",
@@ -92,8 +102,15 @@ def main():
     """命令行主入口"""
     args = parse_args()
 
+    # TUI模式
+    if args.tui:
+        from .tui import run_tui
+        run_tui(preset=args.preset, topic=args.topic)
+        return
+
+    # CLI模式
     print("=" * 60)
-    print("辩论式 PRD 生成系统")
+    print("辩论式 PRD 生成系统 (CLI模式)")
     print("=" * 60)
     print()
 
@@ -103,64 +120,29 @@ def main():
         print("请通过 --api-key 参数或 OPENAI_API_KEY 环境变量设置")
         sys.exit(1)
 
-    # 显示 LLM 配置
-    print("LLM 配置:")
-    print(f"  Base URL: {args.base_url}")
-    print(f"  Model: {args.model}")
-    print(f"  Max Rounds: {args.max_rounds}")
+    # 显示配置
+    print(f"模型: {args.model}")
+    print(f"预设: {args.preset}")
     print()
 
-    # 创建 LLM 配置
     llm_config = LLMConfig(
         api_key=args.api_key,
         base_url=args.base_url,
         model=args.model,
     )
 
-    # 选择预设
-    if args.preset:
-        preset = args.preset
-    else:
-        preset = _select_preset()
+    # 选择议题
+    topic = args.topic or _input_topic()
+    preset = args.preset
 
-    # 输入议题
-    if args.topic:
-        topic = args.topic
-    else:
-        topic = _input_topic()
-
-    # 运行辩论
     asyncio.run(run_debate(llm_config, preset, topic, args.max_rounds, args.output_dir))
 
 
-def _select_preset() -> str:
-    """交互选择预设角色组合"""
-    presets = list_presets()
-    print("可选的角色预设:")
-    for i, name in enumerate(presets, 1):
-        print(f"  {i}. {name}")
-
-    while True:
-        try:
-            choice = input("\n请选择预设编号 (默认 1): ").strip()
-            if not choice:
-                return presets[0]
-            idx = int(choice) - 1
-            if 0 <= idx < len(presets):
-                return presets[idx]
-            print("编号无效，请重新输入")
-        except ValueError:
-            print("请输入数字")
-
-
 def _input_topic() -> str:
-    """交互输入辩论议题"""
-    print("\n请描述你想要开发的产品或功能需求:")
-    print("(例如: 一个用户登录系统，支持手机号和邮箱登录)")
+    """交互输入议题"""
+    print("请输入辩论议题:")
     topic = input("> ").strip()
-    if not topic:
-        topic = "一个通用的产品需求"
-    return topic
+    return topic or "通用产品需求"
 
 
 async def run_debate(
@@ -170,40 +152,19 @@ async def run_debate(
     max_rounds: int,
     output_dir: str,
 ):
-    """运行辩论流程
-
-    Args:
-        llm_config: LLM 配置
-        preset: 预设角色组合
-        topic: 辩论议题
-        max_rounds: 最大辩论轮数
-        output_dir: 输出目录
-    """
-    print(f"\n开始辩论: {preset}")
+    """运行辩论"""
     print(f"议题: {topic}")
     print("-" * 40)
 
-    # 创建模型客户端（支持自定义 base_url）
     client_kwargs = llm_config.to_client_kwargs()
     model_client = OpenAIChatCompletionClient(**client_kwargs)
 
-    # 创建辩论团队
-    settings = Settings(
-        llm=llm_config,
-        max_rounds=max_rounds,
-        prd_output_dir=output_dir,
-    )
-    team = DebateTeam(
-        preset=preset,
-        model_client=model_client,
-        settings=settings,
-    )
+    settings = Settings(llm=llm_config, max_rounds=max_rounds)
+    team = DebateTeam(preset=preset, model_client=model_client, settings=settings)
 
-    # 创建记录器
     recorder = DebateRecorder(output_dir=output_dir)
     recorder.set_metadata(preset, topic)
 
-    # 运行辩论
     try:
         round_num = 0
         stream = team.run_stream(topic)
@@ -211,57 +172,37 @@ async def run_debate(
         async for event in stream:
             if hasattr(event, "messages"):
                 for msg in event.messages:
-                    speaker = msg.source if hasattr(msg, "source") else "system"
-                    content = str(msg.content) if hasattr(msg, "content") else str(msg)
+                    speaker = getattr(msg, 'source', 'system')
+                    content = str(getattr(msg, 'content', msg))
 
-                    # 打印消息
                     print(f"\n[{speaker}]")
-                    print(content[:500] + "..." if len(content) > 500 else content)
+                    print(content[:500])
 
-                    # 记录
-                    role = _get_role_from_speaker(speaker, team)
+                    role = _get_role(speaker, team)
                     recorder.record(round_num, speaker, role, content)
 
                     if "debater" in speaker.lower():
                         round_num += 1
 
-        # 生成 PRD
-        print("\n" + "=" * 60)
-        print("辩论完成，生成 PRD...")
-
-        prd_content = team._moderator.get_final_prd()
-
-        # 保存 PRD
-        generator = PRDGenerator(output_dir=output_dir)
-        filepath = generator.save_string(prd_content, preset, topic)
-
-        print(f"\nPRD 已保存: {filepath}")
-
-        # 保存辩论记录
-        record_path = recorder.export()
-        print(f"辩论记录已保存: {record_path}")
-
-        # 显示摘要
-        summary = recorder.get_summary()
-        print("\n辩论摘要:")
-        print(f"  - 总轮数: {summary['max_round']}")
-        print(f"  - 共识点: {summary['consensus_count']}")
-        print(f"  - 仲裁请求: {summary['arbitration_requests']}")
+                    if "[PRD_COMPLETE]" in content:
+                        prd = content.replace("[PRD_COMPLETE]", "").strip()
+                        generator = PRDGenerator(output_dir=output_dir)
+                        filepath = generator.save_string(prd, preset, topic)
+                        print(f"\n◆ PRD已保存: {filepath}")
+                        recorder.export()
+                        return
 
     except Exception as e:
-        print(f"\n辩论出错: {e}")
+        print(f"\n错误: {e}")
         raise
 
 
-def _get_role_from_speaker(speaker: str, team: DebateTeam) -> str:
-    """从发言者名称获取角色"""
+def _get_role(speaker: str, team: DebateTeam) -> str:
     if "debater1" in speaker.lower():
         return team._preset["debater1"]["role"]
     elif "debater2" in speaker.lower():
         return team._preset["debater2"]["role"]
-    elif "moderator" in speaker.lower():
-        return "Moderator"
-    return "Unknown"
+    return "Moderator"
 
 
 if __name__ == "__main__":

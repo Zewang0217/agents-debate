@@ -1,8 +1,8 @@
 """
 辩论式 PRD 生成系统 - 炫酷 TUI 界面
 
-使用 Textual 框架构建交互式终端界面
 深色简约 + 赛博朋克风格
+支持流式输出（逐字显示）
 """
 
 from textual.app import App, ComposeResult
@@ -11,12 +11,9 @@ from textual.widgets import (
     Footer,
     Static,
     Button,
-    Input,
-    Select,
-    TextArea,
     Label,
 )
-from textual.containers import Container, Vertical, VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual.message import Message
@@ -31,35 +28,41 @@ from ..team.debate_team import DebateTeam
 
 
 # ========== 主题配色 ==========
-# 深蓝灰背景 + 霓虹蓝紫主色 + 赛博绿红强调
 
 THEME = {
-    "bg_dark": "#0d1117",       # 最深背景
-    "bg_panel": "#161b22",      # 面板背景
-    "bg_card": "#21262d",       # 卡片背景
-    "border": "#30363d",        # 边框
-    "text_dim": "#8b949e",      # 暗淡文字
-    "text": "#c9d1d9",          # 正常文字
-    "accent_blue": "#58a6ff",   # 霓虹蓝
-    "accent_purple": "#bc8cff", # 霓虹紫
-    "success": "#3fb950",       # 赛博绿
-    "error": "#f85149",         # 赛博红
-    "warning": "#d29922",       # 赛博橙
+    "bg_dark": "#0d1117",
+    "bg_panel": "#161b22",
+    "bg_card": "#21262d",
+    "border": "#30363d",
+    "text_dim": "#8b949e",
+    "text": "#c9d1d9",
+    "accent_blue": "#58a6ff",
+    "accent_purple": "#bc8cff",
+    "success": "#3fb950",
+    "error": "#f85149",
+    "warning": "#d29922",
 }
 
 
-# ========== 自定义消息类型 ==========
+# ========== 消息类型 ==========
 
 class DebateStarted(Message):
-    """辩论开始消息"""
     def __init__(self, preset: str, topic: str) -> None:
         super().__init__()
         self.preset = preset
         self.topic = topic
 
 
-class NewDebateMessage(Message):
-    """新辩论消息"""
+class StreamingChunk(Message):
+    """流式输出chunk"""
+    def __init__(self, speaker: str, chunk: str) -> None:
+        super().__init__()
+        self.speaker = speaker
+        self.chunk = chunk
+
+
+class MessageComplete(Message):
+    """消息完成"""
     def __init__(self, speaker: str, role: str, content: str) -> None:
         super().__init__()
         self.speaker = speaker
@@ -68,46 +71,61 @@ class NewDebateMessage(Message):
 
 
 class DebateComplete(Message):
-    """辩论完成消息"""
     def __init__(self, prd: str) -> None:
         super().__init__()
         self.prd = prd
 
 
-# ========== 自定义组件 ==========
+# ========== 流式消息组件 ==========
 
-class DebateMessage(Static):
-    """单条辩论消息组件 - 简洁赛博风格"""
+class StreamingMessage(Static):
+    """流式消息组件 - 支持逐字追加"""
 
-    def __init__(self, speaker: str, role: str, content: str, is_user: bool = False) -> None:
+    def __init__(self, speaker: str, role: str) -> None:
         super().__init__()
         self.speaker = speaker
         self.role = role
-        self.content = content
-        self.is_user = is_user
+        self._content = ""
+        self._chunks = []
 
-    def render(self) -> Text:
-        # 赛博朋克配色
-        colors = {
-            "moderator": (THEME["accent_purple"], "◇"),
-            "debater1": (THEME["accent_blue"], "◆"),
-            "debater2": (THEME["warning"], "◆"),
-            "user": (THEME["success"], "●"),
+        # 配色
+        self.colors = {
+            "moderator": THEME["accent_purple"],
+            "debater1": THEME["accent_blue"],
+            "debater2": THEME["warning"],
+            "user": THEME["success"],
         }
-        color, symbol = colors.get(self.speaker.lower(), (THEME["text"], "○"))
 
-        # 简洁格式：符号 + 角色 + 内容
+    def append_chunk(self, chunk: str) -> None:
+        """追加chunk"""
+        self._chunks.append(chunk)
+        self._content = "".join(self._chunks)
+        self.update(self._render_content())
+
+    def finalize(self, full_content: str) -> None:
+        """完成消息"""
+        self._content = full_content
+        self.update(self._render_content())
+
+    def _render_content(self) -> Text:
+        color = self.colors.get(self.speaker.lower(), THEME["text_dim"])
+        symbol = "◆" if self.speaker.lower() != "user" else "●"
+
         text = Text()
         text.append(f"{symbol} ", style=Style(color=color, bold=True))
         text.append(f"{self.role}: ", style=Style(color=THEME["text_dim"]))
-        text.append(self.content[:150])
-        if len(self.content) > 150:
+        # 显示内容（最多300字）
+        display_content = self._content[:300]
+        text.append(display_content)
+        if len(self._content) > 300:
             text.append("…", style=Style(color=THEME["text_dim"]))
         return text
 
 
+# ========== 控制面板 ==========
+
 class ControlPanel(Vertical):
-    """控制面板 - 精简左侧栏"""
+    """控制面板 - 启动后只显示状态"""
 
     DEFAULT_CSS = f"""
     ControlPanel {{
@@ -125,45 +143,25 @@ class ControlPanel(Vertical):
         margin: 1 0;
     }}
 
-    ControlPanel Select {{
-        background: {THEME["bg_card"]};
-        border: solid {THEME["border"]};
-        margin: 0 0 2 0;
+    ControlPanel Static {{
+        color: {THEME["text_dim"]};
+        margin: 0 0 1 0;
     }}
 
-    ControlPanel Input {{
-        background: {THEME["bg_card"]};
-        border: solid {THEME["border"]};
-        color: {THEME["text"]};
-        margin: 0 0 2 0;
+    ControlPanel #status {{
+        color: {THEME["accent_purple"]};
+        text-style: bold;
     }}
 
-    ControlPanel TextArea {{
-        background: {THEME["bg_card"]};
-        border: solid {THEME["border"]};
+    ControlPanel #topic-display {{
         color: {THEME["text"]};
-        height: 6;
-        margin: 0 0 2 0;
+        padding: 1;
+        background: {THEME["bg_card"]};
     }}
 
     ControlPanel Button {{
         margin: 1 0;
         background: {THEME["bg_card"]};
-    }}
-
-    ControlPanel #llm-info {{
-        color: {THEME["text_dim"]};
-        padding: 1;
-    }}
-
-    ControlPanel #start-btn {{
-        background: {THEME["accent_blue"]};
-        color: {THEME["bg_dark"]};
-    }}
-
-    ControlPanel #arbitrate-btn {{
-        background: {THEME["warning"]};
-        color: {THEME["bg_dark"]};
     }}
 
     ControlPanel #stop-btn {{
@@ -173,38 +171,39 @@ class ControlPanel(Vertical):
     """
 
     def compose(self) -> ComposeResult:
-        # 精简标签
-        yield Label("角色")
-        yield Select(
-            [(k, k) for k in list_presets()],  # 简化显示
-            prompt="选择...",
-            id="preset-select",
-        )
+        yield Label("状态")
+        yield Static("待开始", id="status")
 
         yield Label("议题")
-        # 用Input替代TextArea以支持中文输入
-        yield Input(
-            placeholder="输入产品需求...",
-            id="topic-input",
-        )
+        yield Static("", id="topic-display")
 
-        # LLM信息 - 简化显示
-        llm_info = self._get_llm_info()
-        yield Static(llm_info, id="llm-info")
+        yield Label("角色")
+        yield Static("", id="roles-display")
 
-        # 精简按钮文字
-        yield Button("开始", id="start-btn", variant="primary")
-        yield Button("仲裁", id="arbitrate-btn", variant="warning", disabled=True)
-        yield Button("停止", id="stop-btn", variant="error", disabled=True)
+        yield Label("轮数")
+        yield Static("0", id="round-stat")
 
-    def _get_llm_info(self) -> str:
-        """获取 LLM 配置信息 - 简化"""
-        model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-        return f"▸ {model}"
+        yield Button("停止", id="stop-btn", disabled=True)
 
+    def update_status(self, status: str) -> None:
+        self.query_one("#status", Static).update(status)
+
+    def update_topic(self, topic: str) -> None:
+        self.query_one("#topic-display", Static).update(topic[:50] + "…" if len(topic) > 50 else topic)
+
+    def update_roles(self, preset: str) -> None:
+        config = get_preset(preset)
+        roles = f"◆ {config['debater1']['role']}\n◆ {config['debater2']['role']}"
+        self.query_one("#roles-display", Static).update(roles)
+
+    def update_round(self, round_num: int) -> None:
+        self.query_one("#round-stat", Static).update(str(round_num))
+
+
+# ========== 辩论显示区 ==========
 
 class DebateView(VerticalScroll):
-    """辩论显示区域 - 宽幅赛博风格"""
+    """辩论显示区 - 流式输出"""
 
     DEFAULT_CSS = f"""
     DebateView {{
@@ -220,30 +219,19 @@ class DebateView(VerticalScroll):
         text-align: center;
         padding: 2;
     }}
-
-    DebateView DebateMessage {{
-        margin: 0 0 1 0;
-        padding: 1;
-        background: {THEME["bg_card"]};
-        border-left: solid {THEME["accent_blue"]};
-    }}
     """
 
-    messages: reactive[list] = reactive([])
+    _current_streaming: StreamingMessage | None = None
 
     def compose(self) -> ComposeResult:
-        # 极简欢迎文字
         yield Static(
-            "◆ 辩论式 PRD 生成\n\n选择角色 → 输入议题 → 开始",
+            "◆ 辩论式 PRD 生成\n\n议题已设置 → 辩论进行中",
             id="welcome-text",
             classes="welcome",
         )
 
-    def add_message(self, speaker: str, role: str, content: str, is_user: bool = False) -> None:
-        """添加新消息"""
-        self.messages.append((speaker, role, content, is_user))
-        msg_widget = DebateMessage(speaker, role, content, is_user)
-
+    def start_streaming(self, speaker: str, role: str) -> None:
+        """开始新的流式消息"""
         # 移除欢迎文字
         try:
             welcome = self.query_one("#welcome-text")
@@ -251,12 +239,40 @@ class DebateView(VerticalScroll):
         except:
             pass
 
-        self.mount(msg_widget)
+        # 创建新的流式消息组件
+        self._current_streaming = StreamingMessage(speaker, role)
+        self.mount(self._current_streaming)
+        self.scroll_end(animate=False)
+
+    def append_chunk(self, chunk: str) -> None:
+        """追加流式chunk"""
+        if self._current_streaming:
+            self._current_streaming.append_chunk(chunk)
+
+    def finalize_message(self, content: str) -> None:
+        """完成当前消息"""
+        if self._current_streaming:
+            self._current_streaming.finalize(content)
+            self._current_streaming = None
+
+    def add_static_message(self, speaker: str, role: str, content: str) -> None:
+        """添加静态消息（非流式）"""
+        try:
+            welcome = self.query_one("#welcome-text")
+            welcome.remove()
+        except:
+            pass
+
+        msg = StreamingMessage(speaker, role)
+        msg.finalize(content)
+        self.mount(msg)
         self.scroll_end(animate=False)
 
 
+# ========== 状态面板 ==========
+
 class StatusPanel(Vertical):
-    """状态面板 - 紧凑右侧栏"""
+    """状态面板"""
 
     DEFAULT_CSS = f"""
     StatusPanel {{
@@ -276,70 +292,30 @@ class StatusPanel(Vertical):
 
     StatusPanel Static {{
         color: {THEME["text_dim"]};
-        margin: 0 0 1 0;
-    }}
-
-    StatusPanel #status-text {{
-        color: {THEME["accent_purple"]};
-        text-style: bold;
-    }}
-
-    StatusPanel #role-info {{
-        color: {THEME["text"]};
-        padding: 1;
-        background: {THEME["bg_card"]};
     }}
 
     StatusPanel #prd-preview {{
-        height: 8;
+        height: 10;
         background: {THEME["bg_card"]};
         border: solid {THEME["border"]};
         color: {THEME["text_dim"]};
     }}
     """
 
-    round_count: reactive[int] = reactive(0)
-    status: reactive[str] = reactive("待开始")
-
     def compose(self) -> ComposeResult:
-        yield Label("状态")
-        yield Static(self.status, id="status-text")
-
-        yield Label("角色")
-        yield Static("", id="role-info")
-
-        yield Label("轮数")
-        yield Static("0", id="round-stat")
-
-        yield Label("PRD")
+        yield Label("PRD预览")
+        from textual.widgets import TextArea
         yield TextArea(id="prd-preview", disabled=True)
 
-    def update_stats(self, round_num: int, consensus: int, disagreement: int) -> None:
-        """更新统计"""
-        self.round_count = round_num
-        self.query_one("#round-stat", Static).update(f"{round_num}")
-
-    def update_status(self, status: str) -> None:
-        """更新状态"""
-        self.status = status
-        self.query_one("#status-text", Static).update(status)
-
-    def update_roles(self, preset: str) -> None:
-        """更新角色"""
-        config = get_preset(preset)
-        role_info = f"◆ {config['debater1']['role']}\n◆ {config['debater2']['role']}"
-        self.query_one("#role-info", Static).update(role_info)
-
-    def update_prd_preview(self, prd: str) -> None:
-        """更新PRD预览"""
-        preview = self.query_one("#prd-preview", TextArea)
-        preview.text = prd[:300] + "…" if len(prd) > 300 else prd
+    def update_prd(self, prd: str) -> None:
+        preview = self.query_one("#prd-preview")
+        preview.text = prd[:400] + "…" if len(prd) > 400 else prd
 
 
 # ========== 主应用 ==========
 
 class DebateTUIApp(App):
-    """辩论式 PRD 生成系统 - 赛博朋克 TUI"""
+    """辩论式 PRD 生成 - 流式TUI"""
 
     CSS = f"""
     Screen {{
@@ -360,18 +336,19 @@ class DebateTUIApp(App):
     """
 
     BINDINGS = [
-        Binding("s", "start_debate", "开始"),
-        Binding("a", "request_arbitration", "仲裁"),
         Binding("q", "quit", "退出"),
-        Binding("d", "toggle_dark", "主题"),
+        Binding("s", "stop", "停止"),
     ]
 
     TITLE = "◆ 辩论式 PRD 生成"
-    SUB_TITLE = "Agent Debate → PRD"
+    SUB_TITLE = "流式输出"
 
     debate_running: reactive[bool] = reactive(False)
-    debate_team: DebateTeam | None = None
     debate_task: asyncio.Task | None = None
+
+    # 启动参数（外部传入）
+    preset: str = "pm_vs_dev"
+    topic: str = "通用产品需求"
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -380,129 +357,167 @@ class DebateTUIApp(App):
         yield StatusPanel()
         yield Footer()
 
-    def on_select_changed(self, event: Select.Changed) -> None:
-        """预设选择"""
-        if event.select.id == "preset-select":
-            preset = event.value
-            self.query_one(StatusPanel).update_roles(preset)
+    def on_mount(self) -> None:
+        """启动时立即开始辩论"""
+        self.action_start_debate()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        """按钮点击"""
-        if event.button.id == "start-btn":
-            self.action_start_debate()
-        elif event.button.id == "arbitrate-btn":
-            self.action_request_arbitration()
-        elif event.button.id == "stop-btn":
-            self.action_stop_debate()
+        if event.button.id == "stop-btn":
+            self.action_stop()
 
     def action_start_debate(self) -> None:
         """开始辩论"""
         if self.debate_running:
             return
 
-        preset_select = self.query_one("#preset-select", Select)
-        topic_input = self.query_one("#topic-input", Input)
-
-        preset = preset_select.value or "pm_vs_dev"
-        topic = topic_input.value.strip() or "通用产品需求"
-
         self.debate_running = True
-        self.query_one(StatusPanel).update_status("● 辩论中")
-        self.query_one("#start-btn", Button).disabled = True
-        self.query_one("#arbitrate-btn", Button).disabled = False
-        self.query_one("#stop-btn", Button).disabled = False
+        control = self.query_one(ControlPanel)
+        control.update_status("● 辩论中")
+        control.update_topic(self.topic)
+        control.update_roles(self.preset)
+        control.query_one("#stop-btn", Button).disabled = False
 
-        self.debate_task = asyncio.create_task(self._run_debate(preset, topic))
+        self.debate_task = asyncio.create_task(self._run_debate())
 
-    def action_request_arbitration(self) -> None:
-        """请求仲裁"""
-        debate_view = self.query_one(DebateView)
-        debate_view.add_message("user", "用户", "● [仲裁] 请介入决策")
-        self.query_one(StatusPanel).update_status("● 等待仲裁")
-
-    def action_stop_debate(self) -> None:
-        """停止辩论"""
+    def action_stop(self) -> None:
+        """停止"""
         if self.debate_task:
             self.debate_task.cancel()
         self._end_debate()
 
-    def action_toggle_dark(self) -> None:
-        """切换主题"""
-        self.theme = "textual-dark" if self.theme != "textual-dark" else "nord"
-
-    async def _run_debate(self, preset: str, topic: str) -> None:
-        """运行辩论"""
+    async def _run_debate(self) -> None:
+        """运行辩论 - 流式输出"""
         debate_view = self.query_one(DebateView)
-        status_panel = self.query_one(StatusPanel)
-
-        debate_view.add_message("moderator", "Moderator", f"● 开始辩论：{topic[:50]}")
-        status_panel.update_roles(preset)
+        control = self.query_one(ControlPanel)
+        status = self.query_one(StatusPanel)
 
         try:
             llm_config = LLMConfig.from_env()
             if not llm_config.api_key:
-                debate_view.add_message("moderator", "Moderator", "◆ 请配置API Key")
+                debate_view.add_static_message("moderator", "Moderator", "◆ 请配置API Key")
                 self._end_debate()
                 return
 
             from autogen_ext.models.openai import OpenAIChatCompletionClient
 
+            # 创建支持流式的客户端
             model_client = OpenAIChatCompletionClient(**llm_config.to_client_kwargs())
 
             settings = Settings(llm=llm_config, max_rounds=6)
-            team = DebateTeam(preset=preset, model_client=model_client, settings=settings)
-            self.debate_team = team
+            team = DebateTeam(preset=self.preset, model_client=model_client, settings=settings)
 
-            preset_config = get_preset(preset)
+            preset_config = get_preset(self.preset)
             round_num = 0
+            current_speaker = None
+            current_role = None
+            current_content_chunks = []
 
-            stream = team.run_stream(topic)
+            debate_view.add_static_message("moderator", "Moderator", f"● 开始辩论")
+
+            stream = team.run_stream(self.topic)
 
             async for event in stream:
-                if hasattr(event, "messages"):
+                # 处理不同类型的事件
+                event_type = type(event).__name__
+
+                # 流式chunk事件
+                if "StreamingChunk" in event_type or hasattr(event, 'chunk'):
+                    speaker = getattr(event, 'source', current_speaker or 'unknown')
+                    chunk = getattr(event, 'content', '') or getattr(event, 'chunk', '')
+
+                    if chunk and isinstance(chunk, str):
+                        # 如果是新发言者，开始新的流式消息
+                        if speaker != current_speaker:
+                            if current_speaker and current_content_chunks:
+                                # 完成上一个消息
+                                debate_view.finalize_message("".join(current_content_chunks))
+                            current_speaker = speaker
+                            current_role = self._get_role(speaker, preset_config)
+                            current_content_chunks = []
+                            debate_view.start_streaming(speaker, current_role)
+
+                        current_content_chunks.append(chunk)
+                        debate_view.append_chunk(chunk)
+
+                # 完整消息事件
+                elif hasattr(event, 'messages') and event.messages:
                     for msg in event.messages:
-                        speaker = getattr(msg, "source", "system")
-                        content = str(getattr(msg, "content", msg))
+                        msg_source = getattr(msg, 'source', 'system')
+                        msg_content = str(getattr(msg, 'content', ''))
 
-                        role = preset_config["debater1"]["role"] if "debater1" in speaker.lower() \
-                            else preset_config["debater2"]["role"] if "debater2" in speaker.lower() \
-                            else "Moderator"
+                        if msg_content and not msg_content.startswith("["):
+                            role = self._get_role(msg_source, preset_config)
 
-                        debate_view.add_message(speaker, role, content)
+                            # 如果有正在流式的消息，先完成它
+                            if current_speaker:
+                                debate_view.finalize_message(msg_content)
+                                current_speaker = None
+                                current_content_chunks = []
 
-                        if "debater" in speaker.lower():
-                            round_num += 1
-                        status_panel.update_stats(round_num, round_num // 2, round_num // 3)
+                            # 更新轮数
+                            if "debater" in msg_source.lower():
+                                round_num += 1
+                                control.update_round(round_num)
 
-                        if "[PRD_COMPLETE]" in content:
-                            prd = content.replace("[PRD_COMPLETE]", "").strip()
-                            status_panel.update_prd_preview(prd)
-                            debate_view.add_message("moderator", "Moderator", "◆ PRD已生成")
-                            self._end_debate()
-                            return
+                            # 检查PRD完成
+                            if "[PRD_COMPLETE]" in msg_content:
+                                prd = msg_content.replace("[PRD_COMPLETE]", "").strip()
+                                status.update_prd(prd)
+                                debate_view.add_static_message("moderator", "Moderator", "◆ PRD已生成")
+                                self._end_debate()
+                                return
+
+                # TaskResult事件（结束）
+                elif event_type == "TaskResult" or hasattr(event, 'stop_reason'):
+                    if current_speaker and current_content_chunks:
+                        debate_view.finalize_message("".join(current_content_chunks))
+                    debate_view.add_static_message("moderator", "Moderator", "◆ 辩论结束")
+                    self._end_debate()
+                    return
 
         except asyncio.CancelledError:
-            debate_view.add_message("moderator", "Moderator", "◆ 已停止")
+            debate_view.add_static_message("moderator", "Moderator", "◆ 已停止")
             self._end_debate()
 
         except Exception as e:
-            debate_view.add_message("moderator", "Moderator", f"◆ 错误: {str(e)[:80]}")
+            debate_view.add_static_message("moderator", "Moderator", f"◆ 错误: {str(e)[:100]}")
             self._end_debate()
 
+    def _get_role(self, speaker: str, preset_config: dict) -> str:
+        """获取角色名"""
+        if "debater1" in speaker.lower():
+            return preset_config["debater1"]["role"]
+        elif "debater2" in speaker.lower():
+            return preset_config["debater2"]["role"]
+        elif "moderator" in speaker.lower():
+            return "Moderator"
+        return speaker
+
     def _end_debate(self) -> None:
-        """结束辩论"""
+        """结束"""
         self.debate_running = False
         self.debate_task = None
 
-        self.query_one(StatusPanel).update_status("◆ 完成")
-        self.query_one("#start-btn", Button).disabled = False
-        self.query_one("#arbitrate-btn", Button).disabled = True
-        self.query_one("#stop-btn", Button).disabled = True
+        control = self.query_one(ControlPanel)
+        control.update_status("◆ 完成")
+        control.query_one("#stop-btn", Button).disabled = True
 
 
-def run_tui():
-    """启动 TUI"""
+def run_tui(preset: str = None, topic: str = None):
+    """启动TUI - 支持外部传入参数
+
+    Args:
+        preset: 预设角色组合
+        topic: 辩论议题
+    """
     app = DebateTUIApp()
+
+    # 设置启动参数
+    if preset:
+        app.preset = preset
+    if topic:
+        app.topic = topic
+
     app.run()
 
 
