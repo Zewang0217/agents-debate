@@ -1,10 +1,10 @@
 # agents-debate 项目
 
 ## 项目概述
-辩论式 PRD 生成系统：两个 Agent 代表不同立场辩论，Moderator 协调并生成 PRD。
+辩论式 PRD 生成系统：基于 Claude Code 多代理设计模式，两个 Debater Agent 通过消息互发实现真正的"吵架"式辩论，Moderator 协调流程并生成 PRD。
 
 ## 技术栈
-- AutoGen (autogen-agentchat>=0.4) - 多 Agent 框架
+- AsyncOpenAI - LLM 客户端（兼容 OpenAI/DeepSeek/Ollama）
 - Textual (>=0.47) - TUI 界面
 - Rich (>=13.0) - 终端渲染
 
@@ -18,9 +18,16 @@ uv pip install -e .
 source .env && export OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL
 
 # 启动
-debate-prd-tui  # TUI 模式（推荐）
-debate-prd      # CLI 模式
+debate-prd --tui --topic "议题名称"  # TUI 模式（推荐）
+debate-prd --topic "议题名称"        # CLI 模式
 ```
+
+## TUI 快捷键
+| 键 | 功能 |
+|---|------|
+| `B` | 开始辩论 |
+| `S` | 停止辩论 |
+| `Q` | 退出 |
 
 ## LLM 配置
 环境变量配置（兼容 OpenAI 格式）：
@@ -31,11 +38,27 @@ debate-prd      # CLI 模式
 ## 项目结构
 ```
 src/debate_prd/
-├── agents/     - DebaterAgent, ModeratorAgent
-├── team/       - DebateTeam (SelectorGroupChat)
-├── config/     - presets (角色预设), settings (LLM配置)
-├── output/     - PRDGenerator, DebateRecorder
-├── cli/        - main.py (CLI), tui.py (TUI)
+├── core/                 # 核心辩论系统
+│   ├── messaging/        # 消息传递（mailbox）
+│   ├── memory/           # Agent 记忆（project scope）
+│   ├── spawn/            # Debater Agent 创建
+│   └── debate_loop.py    # 辩论循环控制
+├── config/               # 配置
+│   ├── presets.py        # 角色预设
+│   └── settings.py       # LLM 和系统配置
+├── output/               # 输出生成
+│   └ prd_generator.py   # PRD 生成器
+└── cli/                  # CLI 入口
+    ├── main.py           # 传统 CLI
+    └── tui.py            # TUI 界面
+```
+
+## 记忆系统
+Agent 记忆存储在 `.claude/agent-memory/`：
+```
+.claude/agent-memory/
+├── debater1_PM/MEMORY.md    # PM Agent 记忆
+├── debater2_Dev/MEMORY.md   # Dev Agent 记忆
 ```
 
 ## 预设角色
@@ -46,4 +69,4 @@ src/debate_prd/
 ## 注意事项
 - `.env` 包含 API Key，已排除 git
 - 输出目录 `./output/` 也已排除
-- 用户介入标记：`[REQUEST_ARBITRATION]`、`[AGREE]`、`仲裁`
+- **TUI CSS 必须使用硬编码十六进制颜色**（如 `#c9d1d9`），禁止使用 CSS 变量或 f-string，否则 Textual 会报错或文字不可见
