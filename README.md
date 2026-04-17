@@ -20,12 +20,15 @@ An innovative PRD generation system where two AI agents with different perspecti
 
 ## 🚀 Quick Start
 
-### Installation
+### Installation (with uv)
 
 ```bash
 git clone https://github.com/zewang/agents-debate.git
 cd agents-debate
-pip install -e .
+
+# Create virtual environment and install dependencies
+uv venv && source .venv/bin/activate
+uv pip install -e .
 ```
 
 ### Configuration

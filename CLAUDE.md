@@ -9,8 +9,18 @@
 - Rich (>=13.0) - 终端渲染
 
 ## 运行命令
-- `debate-prd-tui` - 炫酷 TUI 模式（推荐）
-- `debate-prd` - 传统 CLI 模式
+```bash
+# 使用 uv 创建虚拟环境
+uv venv && source .venv/bin/activate
+uv pip install -e .
+
+# 加载环境变量
+source .env && export OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL
+
+# 启动
+debate-prd-tui  # TUI 模式（推荐）
+debate-prd      # CLI 模式
+```
 
 ## LLM 配置
 环境变量配置（兼容 OpenAI 格式）：

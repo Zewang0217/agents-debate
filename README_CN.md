@@ -20,12 +20,15 @@ English | [中文文档](./README_CN.md)
 
 ## 🚀 快速开始
 
-### 安装
+### 安装（使用 uv）
 
 ```bash
 git clone https://github.com/zewang/agents-debate.git
 cd agents-debate
-pip install -e .
+
+# 创建虚拟环境并安装依赖
+uv venv && source .venv/bin/activate
+uv pip install -e .
 ```
 
 ### 配置
