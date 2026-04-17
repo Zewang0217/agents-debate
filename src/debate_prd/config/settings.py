@@ -23,6 +23,15 @@ class LLMConfig:
     max_tokens: int = 2048
     """最大输出 token 数"""
 
+    model_info: dict = field(default_factory=lambda: {
+        "vision": False,
+        "function_calling": True,
+        "json_output": True,
+        "family": "unknown",
+        "structured_output": True,
+    })
+    """模型能力信息（非OpenAI模型必需）"""
+
     def __post_init__(self):
         """初始化后处理：从环境变量读取默认值"""
         if not self.api_key:
@@ -37,6 +46,41 @@ class LLMConfig:
         env_model = os.environ.get("OPENAI_MODEL", "")
         if env_model:
             self.model = env_model
+
+        # 根据模型名称自动设置model_info
+        self._auto_detect_model_info()
+
+    def _auto_detect_model_info(self) -> None:
+        """根据模型名称自动检测model_info"""
+        model_lower = self.model.lower()
+
+        # DeepSeek模型
+        if "deepseek" in model_lower:
+            self.model_info = {
+                "vision": False,
+                "function_calling": True,
+                "json_output": True,
+                "family": "deepseek",
+                "structured_output": True,
+            }
+        # Ollama本地模型
+        elif self.base_url and ("localhost" in self.base_url or "11434" in self.base_url):
+            self.model_info = {
+                "vision": False,
+                "function_calling": True,
+                "json_output": False,
+                "family": "unknown",
+                "structured_output": False,
+            }
+        # 其他自定义模型
+        elif self.base_url != "https://api.openai.com/v1":
+            self.model_info = {
+                "vision": False,
+                "function_calling": True,
+                "json_output": True,
+                "family": "unknown",
+                "structured_output": True,
+            }
 
     @classmethod
     def from_env(cls) -> "LLMConfig":
@@ -59,9 +103,10 @@ class LLMConfig:
             "model": self.model,
             "api_key": self.api_key,
         }
-        # 仅当 base_url 不是默认值时才传入
+        # 非OpenAI模型需要base_url和model_info
         if self.base_url != "https://api.openai.com/v1":
             kwargs["base_url"] = self.base_url
+            kwargs["model_info"] = self.model_info
         return kwargs
 
 
