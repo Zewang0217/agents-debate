@@ -65,6 +65,7 @@ def parse_args() -> argparse.Namespace:
         epilog="""
 示例:
   debate-prd --topic "用户认证系统" --preset pm_vs_dev
+  debate-prd --interactive
 
 环境变量:
   OPENAI_API_KEY  - API Key
@@ -90,6 +91,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--topic", type=str, default=None)
     parser.add_argument("--output-dir", type=str, default="./output")
+    parser.add_argument("--interactive", action="store_true", help="启动交互式配置模式")
 
     return parser.parse_args()
 
@@ -99,6 +101,12 @@ def main():
     signal.signal(signal.SIGINT, _signal_handler)
 
     args = parse_args()
+
+    if args.interactive:
+        from .interactive import run_interactive_cli
+
+        run_interactive_cli(args)
+        return
 
     if not args.api_key:
         console.print()
@@ -179,7 +187,9 @@ async def run_debate(
                 sub_phase = event.get("phase", "")
                 note = event.get("note", "")
                 if sub_phase == "publish_view":
-                    console.print(f"[{COLORS.GOLD}]◆ 双方并发发表看法{f'（{note}）' if note else ''}[/{COLORS.GOLD}]")
+                    console.print(
+                        f"[{COLORS.GOLD}]◆ 双方并发发表看法{f'（{note}）' if note else ''}[/{COLORS.GOLD}]"
+                    )
                 elif sub_phase == "free_debate":
                     console.print(f"[{COLORS.GOLD}]◆ 进入自由辩论[/{COLORS.GOLD}]")
 
@@ -205,6 +215,57 @@ async def run_debate(
                 _show_complete(event, preset, topic, output_dir)
                 return
 
+            elif event_type == "stalemate_question":
+                # 僵局询问（强制回答）
+                console.print()
+                console.print(f"[{COLORS.ROSE}]━━ 僵局检测 ━━[/{COLORS.ROSE}]")
+                console.print(f"[{COLORS.TEXT}]{event.get('question', '')}[/{COLORS.TEXT}]")
+                if event.get("disagreements"):
+                    console.print(f"[{TEXT_MUTED}]分歧点：[/{TEXT_MUTED}]")
+                    console.print(event.get("disagreements", ""))
+
+                # 获取用户回答（强制）
+                answer_prompt = Text()
+                answer_prompt.append("您的看法: ", style=Style(color=COLORS.IRIS, bold=True))
+                answer_prompt.append("> ", style=Style(color=COLORS.ROSE))
+                console.print(answer_prompt, end=" ")
+                answer = await asyncio.to_thread(input)
+
+                # 提交回答并恢复辩论
+                moderator.submit_intervention(answer)
+                async for resume_event in moderator.resume_debate():
+                    # 处理恢复后的事件
+                    resume_type = resume_event.get("type", "")
+                    if resume_type == "intervention_applied":
+                        console.print()
+                        console.print(f"[{COLORS.PINE}]✓ 用户决策已注入：{resume_event.get('answer', '')}[/{COLORS.PINE}]")
+                    elif resume_type == "debate_complete":
+                        _show_complete(resume_event, preset, topic, output_dir)
+                        return
+                    elif resume_type == "token":
+                        _print_token(resume_event, current_role_state, console)
+                    elif resume_type == "message_complete":
+                        _print_complete(console)
+                    elif resume_type == "moderator_record":
+                        _print_moderator_record(resume_event, console)
+                    elif resume_type == "stalemate_question":
+                        # 递归处理下一个僵局
+                        await _handle_stalemate(resume_event, moderator, console, preset, topic, output_dir, current_role_state)
+                        return
+                    elif resume_type == "critical_decision_question":
+                        await _handle_critical_decision(resume_event, moderator, console, preset, topic, output_dir, current_role_state)
+                        return
+                return
+
+            elif event_type == "critical_decision_question":
+                # 关键决策询问（可选回答）
+                await _handle_critical_decision(event, moderator, console, preset, topic, output_dir, current_role_state)
+                return
+
+            elif event_type == "intervention_applied":
+                console.print()
+                console.print(f"[{COLORS.PINE}]✓ 用户决策已注入：{event.get('answer', '')}[/{COLORS.PINE}]")
+
             elif event_type == "token":
                 _print_token(event, current_role_state, console)
 
@@ -222,20 +283,7 @@ async def run_debate(
                 console.print(text)
 
             elif event_type == "moderator_record":
-                # Moderator 记录摘要
-                console.print()
-                console.print(f"[{COLORS.SUBTLE}]━━ Moderator 记录 ━━[/{COLORS.SUBTLE}]")
-                for line in event.get("content", "").split("\n"):
-                    if line.startswith("  ✓"):
-                        console.print(f"[{COLORS.PINE}]{line}[/{COLORS.PINE}]")
-                    elif line.startswith("  ◐"):
-                        console.print(f"[{COLORS.GOLD}]{line}[/{COLORS.GOLD}]")
-                    elif line.startswith("  ✗"):
-                        console.print(f"[{COLORS.ROSE}]{line}[/{COLORS.ROSE}]")
-                    elif line.startswith("  📊"):
-                        console.print(f"[{COLORS.IRIS}]{line}[/{COLORS.IRIS}]")
-                    else:
-                        console.print(f"[{COLORS.TEXT}]{line}[/{COLORS.TEXT}]")
+                _print_moderator_record(event, console)
 
             elif event_type == "error":
                 status_error(event.get("message", "错误"))
@@ -301,7 +349,9 @@ async def _clarification_loop(
                 sub_phase = e.get("phase", "")
                 note = e.get("note", "")
                 if sub_phase == "publish_view":
-                    console.print(f"[{COLORS.GOLD}]◆ 双方并发发表看法{f'（{note}）' if note else ''}[/{COLORS.GOLD}]")
+                    console.print(
+                        f"[{COLORS.GOLD}]◆ 双方并发发表看法{f'（{note}）' if note else ''}[/{COLORS.GOLD}]"
+                    )
                 elif sub_phase == "free_debate":
                     console.print(f"[{COLORS.GOLD}]◆ 进入自由辩论[/{COLORS.GOLD}]")
 
@@ -375,6 +425,113 @@ def _print_complete(console: Console):
     console.print()
     console.print(f"[{COLORS.PINE}]✓ 完成[/{COLORS.PINE}]")
     console.print(f"[{TEXT_MUTED}]" + "━" * 40 + f"[/{TEXT_MUTED}]")
+
+
+async def _handle_stalemate(event, moderator, console, preset, topic, output_dir, current_role_state):
+    """处理僵局询问"""
+    console.print()
+    console.print(f"[{COLORS.ROSE}]━━ 僵局检测 ━━[/{COLORS.ROSE}]")
+    console.print(f"[{COLORS.TEXT}]{event.get('question', '')}[/{COLORS.TEXT}]")
+    if event.get("disagreements"):
+        console.print(f"[{TEXT_MUTED}]分歧点：[/{TEXT_MUTED}]")
+        console.print(event.get("disagreements", ""))
+
+    answer_prompt = Text()
+    answer_prompt.append("您的看法: ", style=Style(color=COLORS.IRIS, bold=True))
+    answer_prompt.append("> ", style=Style(color=COLORS.ROSE))
+    console.print(answer_prompt, end=" ")
+    answer = await asyncio.to_thread(input)
+
+    moderator.submit_intervention(answer)
+    async for resume_event in moderator.resume_debate():
+        resume_type = resume_event.get("type", "")
+        if resume_type == "intervention_applied":
+            console.print()
+            console.print(f"[{COLORS.PINE}]✓ 用户决策已注入：{resume_event.get('answer', '')}[/{COLORS.PINE}]")
+        elif resume_type == "debate_complete":
+            _show_complete(resume_event, preset, topic, output_dir)
+            return
+        elif resume_type == "token":
+            _print_token(resume_event, current_role_state, console)
+        elif resume_type == "message_complete":
+            _print_complete(console)
+        elif resume_type == "moderator_record":
+            _print_moderator_record(resume_event, console)
+        elif resume_type == "stalemate_question":
+            await _handle_stalemate(resume_event, moderator, console, preset, topic, output_dir, current_role_state)
+            return
+        elif resume_type == "critical_decision_question":
+            await _handle_critical_decision(resume_event, moderator, console, preset, topic, output_dir, current_role_state)
+            return
+
+
+async def _handle_critical_decision(event, moderator, console, preset, topic, output_dir, current_role_state):
+    """处理关键决策询问（可选回答）"""
+    console.print()
+    console.print(f"[{COLORS.GOLD}]━━ 关键决策点 ━━[/{COLORS.GOLD}]")
+    console.print(f"[{COLORS.TEXT}]{event.get('question', '')}[/{COLORS.TEXT}]")
+
+    options = event.get("options", [])
+    if options:
+        for i, opt in enumerate(options):
+            console.print(f"[{TEXT_MUTED}]  [{i+1}] {opt}[/{TEXT_MUTED}]")
+        console.print(f"[{TEXT_MUTED}]  [其他] 输入自定义回答[/{TEXT_MUTED}]")
+        console.print(f"[{TEXT_MUTED}]  [跳过] 按 Enter 跳过此问题[/{TEXT_MUTED}]")
+
+    answer_prompt = Text()
+    answer_prompt.append("您的回答: ", style=Style(color=COLORS.IRIS))
+    answer_prompt.append("> ", style=Style(color=COLORS.ROSE))
+    console.print(answer_prompt, end=" ")
+    answer = await asyncio.to_thread(input)
+
+    if answer.strip():
+        # 用户回答了
+        if options and answer.isdigit():
+            idx = int(answer) - 1
+            if 0 <= idx < len(options):
+                answer = options[idx]
+
+        moderator.submit_intervention(answer, event.get("category"))
+        async for resume_event in moderator.resume_debate():
+            resume_type = resume_event.get("type", "")
+            if resume_type == "intervention_applied":
+                console.print()
+                console.print(f"[{COLORS.PINE}]✓ 用户决策已注入：{resume_event.get('answer', '')}[/{COLORS.PINE}]")
+            elif resume_type == "debate_complete":
+                _show_complete(resume_event, preset, topic, output_dir)
+                return
+            elif resume_type == "token":
+                _print_token(resume_event, current_role_state, console)
+            elif resume_type == "message_complete":
+                _print_complete(console)
+            elif resume_type == "moderator_record":
+                _print_moderator_record(resume_event, console)
+            elif resume_type == "stalemate_question":
+                await _handle_stalemate(resume_event, moderator, console, preset, topic, output_dir, current_role_state)
+                return
+            elif resume_type == "critical_decision_question":
+                await _handle_critical_decision(resume_event, moderator, console, preset, topic, output_dir, current_role_state)
+                return
+    else:
+        # 用户跳过，继续原有辩论流
+        console.print(f"[{TEXT_MUTED}]已跳过[/{TEXT_MUTED}]")
+
+
+def _print_moderator_record(event, console):
+    """打印 Moderator 记录"""
+    console.print()
+    console.print(f"[{COLORS.SUBTLE}]━━ Moderator 记录 ━━[/{COLORS.SUBTLE}]")
+    for line in event.get("content", "").split("\n"):
+        if line.startswith("  ✓"):
+            console.print(f"[{COLORS.PINE}]{line}[/{COLORS.PINE}]")
+        elif line.startswith("  ◐"):
+            console.print(f"[{COLORS.GOLD}]{line}[/{COLORS.GOLD}]")
+        elif line.startswith("  ✗"):
+            console.print(f"[{COLORS.ROSE}]{line}[/{COLORS.ROSE}]")
+        elif line.startswith("  📊"):
+            console.print(f"[{COLORS.IRIS}]{line}[/{COLORS.IRIS}]")
+        else:
+            console.print(f"[{COLORS.TEXT}]{line}[/{COLORS.TEXT}]")
 
 
 def _show_complete(event: dict, preset: str, topic: str, output_dir: str):

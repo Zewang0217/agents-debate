@@ -17,6 +17,7 @@ import jieba
 from .spawn.debater_agent import DebaterAgent, create_debater_pair
 from .messaging.mailbox import get_message_router, reset_message_router
 from .tools.ask_user import AskUserTool
+from .tools.moderator_tools import ModeratorTools
 from ..config.settings import Settings
 
 
@@ -377,6 +378,10 @@ class DebateModerator:
 
         # Tool机制
         self._ask_user_tool = ask_user_tool
+        self._moderator_tools = ModeratorTools()  # 新增：中控主动干预工具
+
+        # 已询问过的关键决策点（避免重复）
+        self._asked_decisions: set[str] = set()
 
         # ClarificationModerator
         self._clarification_moderator: Optional[ClarificationModerator] = None
@@ -544,6 +549,31 @@ class DebateModerator:
         last_record_round = self._debate_state.round_num
 
         while not self._debate_state.terminated:
+            # 检查是否有待注入的用户回答
+            if hasattr(self, '_pending_user_intervention') and self._pending_user_intervention:
+                intervention = self._pending_user_intervention
+                self._pending_user_intervention = None
+
+                # 注入信息到双方 Agent mailbox
+                from .messaging.mailbox import send_to_agent
+
+                intervention_msg = f"[Moderator 补充信息]\n用户决策：{intervention['answer']}\n请基于此约束继续辩论。"
+                await send_to_agent("moderator", "debater1", intervention_msg)
+                await send_to_agent("moderator", "debater2", intervention_msg)
+
+                # 通知用户信息已注入
+                yield {
+                    "type": "intervention_applied",
+                    "answer": intervention['answer'],
+                }
+
+            # 僵局检测：在终止检测前，先询问用户
+            if self._debate_state.stalemate_count >= 2 and not self._debate_state.terminated:
+                stalemate_event = self._generate_stalemate_question()
+                yield stalemate_event
+                # 暂停等待用户回答（由 CLI 处理并调用 submit_intervention）
+                return  # 暂停生成器，等待 CLI 调用 resume
+
             if self._check_termination():
                 break
 
@@ -604,6 +634,125 @@ class DebateModerator:
                 if self._debate_state.round_num - last_record_round >= record_interval:
                     yield self._generate_moderator_record("自由辩论进展")
                     last_record_round = self._debate_state.round_num
+
+                # 关键决策检测
+                critical_decision = self._detect_critical_decision(recent_messages)
+                if critical_decision:
+                    yield {
+                        "type": "critical_decision_question",
+                        "category": critical_decision["category"],
+                        "keyword": critical_decision["keyword"],
+                        "question": critical_decision["question"],
+                        "options": critical_decision["options"],
+                        "allow_skip": True,
+                    }
+                    # 暂停等待用户回答
+                    return
+
+    def submit_intervention(self, answer: str, category: str = None):
+        """提交用户介入回答
+
+        Args:
+            answer: 用户回答
+            category: 决策类别（可选）
+        """
+        self._pending_user_intervention = {
+            "answer": answer,
+            "category": category,
+        }
+
+    async def resume_debate(self):
+        """恢复辩论（用户回答后）
+
+        Yields:
+            继续辩论的事件流
+        """
+        # 继续自由辩论循环
+        async for event in self._continue_free_debate():
+            yield event
+
+    async def _continue_free_debate(self):
+        """继续自由辩论（内部方法）"""
+        # 使用相同的状态继续循环
+        recent_messages = []
+
+        # 僵局检测状态
+        prev_agree_count = len(self._debate_state.agree_points)
+        prev_partial_count = len(self._debate_state.partial_agree_points)
+        prev_disagree_count = len(self._debate_state.disagreement_points)
+        record_interval = 2
+        last_record_round = self._debate_state.round_num
+
+        while not self._debate_state.terminated:
+            # 检查是否有待注入的用户回答
+            if hasattr(self, '_pending_user_intervention') and self._pending_user_intervention:
+                intervention = self._pending_user_intervention
+                self._pending_user_intervention = None
+
+                from .messaging.mailbox import send_to_agent
+
+                intervention_msg = f"[Moderator 补充信息]\n用户决策：{intervention['answer']}\n请基于此约束继续辩论。"
+                await send_to_agent("moderator", "debater1", intervention_msg)
+                await send_to_agent("moderator", "debater2", intervention_msg)
+
+                yield {
+                    "type": "intervention_applied",
+                    "answer": intervention['answer'],
+                }
+
+            if self._check_termination():
+                break
+
+            responded = False
+            for debater in [self.debater1, self.debater2]:
+                messages = await debater._mailbox.get_messages()
+                if messages:
+                    opponent_msg = messages[-1].content
+                    full_content = ""
+                    async for event in debater.respond_stream(
+                        self._topic, opponent_msg, self._prd_base
+                    ):
+                        yield event
+                        if event.get("type") == "message_complete":
+                            full_content = event["content"]
+
+                    if full_content:
+                        self._extract_prd_items(full_content)
+                        self._debate_state.round_num += 1
+                        self._extract_points(full_content)
+                        recent_messages.append(full_content)
+                        responded = True
+
+                        curr_agree = len(self._debate_state.agree_points)
+                        curr_partial = len(self._debate_state.partial_agree_points)
+                        curr_disagree = len(self._debate_state.disagreement_points)
+
+                        has_new_viewpoint = (
+                            curr_agree > prev_agree_count or
+                            curr_partial > prev_partial_count or
+                            curr_disagree > prev_disagree_count
+                        )
+
+                        if has_new_viewpoint:
+                            self._debate_state.stalemate_count = 0
+                            prev_agree_count = curr_agree
+                            prev_partial_count = curr_partial
+                            prev_disagree_count = curr_disagree
+                        else:
+                            self._debate_state.stalemate_count += 1
+
+            if not responded:
+                await asyncio.sleep(0.5)
+            else:
+                if self._debate_state.round_num - last_record_round >= record_interval:
+                    yield self._generate_moderator_record("自由辩论进展")
+                    last_record_round = self._debate_state.round_num
+
+                # 僵局检测
+                if self._debate_state.stalemate_count >= 2:
+                    stalemate_event = self._generate_stalemate_question()
+                    yield stalemate_event
+                    return
 
     def _generate_moderator_record(self, phase: str) -> dict:
         """生成 Moderator 记录事件"""
@@ -816,6 +965,82 @@ class DebateModerator:
             if len(w) > 1 and w not in ["的", "是", "有", "在", "和", "对", "为", "这"]
         ]
         return keywords[:20]  # 最多20个关键词
+
+    def _detect_critical_decision(self, recent_messages: list[str]) -> Optional[dict]:
+        """检测关键决策点
+
+        当辩论涉及以下内容且双方存在分歧时，应询问用户：
+        - 技术栈选择（React/Vue/Angular等）
+        - 预算/成本约束
+        - 时间约束（上线时间、开发周期）
+        - 团队规模/人力
+        - 架构方案（微服务/单体等）
+
+        Returns:
+            如果检测到关键决策点，返回决策信息；否则返回 None
+        """
+        CRITICAL_KEYWORDS = {
+            "技术栈": ["技术栈", "框架", "React", "Vue", "Angular", "Next.js", "Nuxt"],
+            "预算": ["预算", "成本", "费用", "投入", "资金"],
+            "时间": ["时间", "周期", "上线", "交付", "deadline", "截止"],
+            "团队": ["团队", "人力", "人员", "开发人员", "工程师"],
+            "架构": ["架构", "微服务", "单体", "分布式", "单体应用"],
+        }
+
+        if len(recent_messages) < 2:
+            return None
+
+        # 检查最近消息中是否包含关键决策关键词
+        recent_text = " ".join(recent_messages[-3:])
+
+        for category, keywords in CRITICAL_KEYWORDS.items():
+            for kw in keywords:
+                if kw.lower() in recent_text.lower():
+                    # 检查是否已询问过
+                    if category in self._asked_decisions:
+                        continue
+
+                    # 检查是否有分歧（双方都在讨论这个话题）
+                    if self._debate_state.disagreement_points:
+                        # 标记已询问
+                        self._asked_decisions.add(category)
+                        return {
+                            "category": category,
+                            "keyword": kw,
+                            "question": f"关于【{category}】，您的倾向或约束是什么？",
+                            "options": self._get_decision_options(category),
+                        }
+
+        return None
+
+    def _get_decision_options(self, category: str) -> list[str]:
+        """获取关键决策的默认选项"""
+        OPTIONS = {
+            "技术栈": ["React", "Vue", "其他框架", "无特定要求"],
+            "预算": ["低成本优先", "平衡成本与质量", "质量优先"],
+            "时间": ["1-3个月", "3-6个月", "6个月以上"],
+            "团队": ["1-3人", "3-5人", "5人以上"],
+            "架构": ["单体架构", "微服务", "混合架构"],
+        }
+        return OPTIONS.get(category, [])
+
+    def _generate_stalemate_question(self) -> dict:
+        """生成僵局询问
+
+        Returns:
+            僵局询问事件数据
+        """
+        # 获取最近分歧点
+        disagreements = self._debate_state.disagreement_points[-3:]
+        disagreement_summary = "\n".join(f"• {d[:100]}" for d in disagreements) if disagreements else "双方观点差异"
+
+        return {
+            "type": "stalemate_question",
+            "topic": self._topic,
+            "disagreements": disagreement_summary,
+            "rounds": self._debate_state.round_num,
+            "question": f"辩论已进行 {self._debate_state.round_num} 轮，双方僵持不下。\n请您给出看法或倾向，帮助打破僵局：",
+        }
 
     def _generate_guidance(self, topic: str, off_topic_content: str) -> str:
         """生成引导消息"""
