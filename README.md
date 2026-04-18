@@ -53,20 +53,34 @@ export OPENAI_MODEL=llama3
 ### Run
 
 ```bash
-# TUI Mode (Recommended) - Interactive interface
-debate-prd --tui --topic "User authentication system"
+# Interactive Mode (Recommended) - REPL with slash commands
+debate-prd-interactive
 
 # CLI Mode - Traditional command line
 debate-prd --topic "User authentication system" --preset pm_vs_dev
 ```
 
-### TUI Controls
+### Interactive Mode Commands
 
-| Key | Action |
-|-----|--------|
-| `B` | Start debate |
-| `S` | Stop debate |
-| `Q` | Quit |
+| Command | Description |
+|---------|-------------|
+| `/help` | Show help information |
+| `/config [key] [value]` | View/set configuration |
+| `/presets` | List available presets |
+| `/status` | Show current status |
+| `/start` | Start debate |
+| `/quit` | Exit interactive mode |
+| `<text>` | Set debate topic directly |
+
+**Interactive Mode Usage:**
+```bash
+debate-prd-interactive
+> /help                      # Show commands
+> /config                    # View current config
+> /config model gpt-4o       # Change model
+> User authentication system # Set topic
+> /start                     # Start debate
+```
 
 ## 🎭 Preset Role Combinations
 
@@ -76,26 +90,36 @@ debate-prd --topic "User authentication system" --preset pm_vs_dev
 | `business_vs_security` | Business (Growth) | Security (Compliance) | Speed vs Safety |
 | `ux_vs_architecture` | UX (User Experience) | Arch (System Stability) | Usability vs Performance |
 
-## 🖥️ TUI Interface
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│ 辩论式 PRD 生成                                               │
-├─────────────┬──────────────────────────┬────────────────────┤
-│ 状态        │  消息卡片                 │ PRD 预览           │
-│ 待开始      │  【PM】产品价值优先...     │                    │
-│ 议题        │  【Dev】技术成本考量...    │ # PRD: ...         │
-│ 轮数        │  ...                      │                    │
-│ 预设        │                           │                    │
-├─────────────┴──────────────────────────┴────────────────────┤
-│ [B]开始 [S]停止 [Q]退出                                       │
-└──────────────────────────────────────────────────────────────┘
-```
-
 ## 🛠️ Architecture
 
 Based on Claude Code's agent design patterns:
 
+```
+src/debate_prd/
+├── core/                 # Core debate system
+│   ├── messaging/        # Message passing (mailbox)
+│   ├── memory/           # Agent memory (project scope)
+│   ├── spawn/            # Debater agent creation
+│   └── debate_loop.py    # Debate loop control
+├── config/               # Configuration
+│   ├── presets.py        # Role presets
+│   └── settings.py       # LLM & system settings
+├── output/               # Output generation
+│   └ prd_generator.py   # PRD generator
+└── cli/                  # CLI entry points
+    ├── main.py           # Traditional CLI
+    ├── interactive.py    # Interactive REPL mode
+    ├── session.py        # Session state management
+    ├── commands/         # Slash command system
+    │   ├── base.py       # Command registry & handler
+    │   ├── help.py       # Help command
+    │   ├── config.py     # Config command
+    │   ├── presets.py    # Presets command
+    │   ├── status.py     # Status command
+    │   ├── start.py      # Start command
+    │   └── quit.py       # Quit command
+    ├── theme.py          # CLI color theme
+    └── formatting.py     # Rich output helpers
 ```
 src/debate_prd/
 ├── core/                 # Core debate system
@@ -125,15 +149,24 @@ Agents store memories in `.claude/agent-memory/`:
 
 ## 🔧 CLI Options
 
+**debate-prd (CLI mode):**
+
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--tui` | Launch TUI mode | False |
 | `--api-key` | API Key | `$OPENAI_API_KEY` |
 | `--base-url` | API Base URL | `https://api.openai.com/v1` |
 | `--model` | Model name | `gpt-4o-mini` |
 | `--preset` | Role preset | `pm_vs_dev` |
 | `--topic` | Debate topic | Interactive input |
 | `--max-rounds` | Max debate rounds | `10` |
+| `--output-dir` | PRD output directory | `./output` |
+
+**debate-prd-interactive (REPL mode):**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--preset` | Role preset | `pm_vs_dev` |
+| `--max-rounds` | Max debate rounds | `6` |
 | `--output-dir` | PRD output directory | `./output` |
 
 ## 🤝 Contributing

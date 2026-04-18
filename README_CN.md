@@ -53,20 +53,34 @@ export OPENAI_MODEL=llama3
 ### 运行
 
 ```bash
-# TUI 模式（推荐）- 交互式界面
-debate-prd --tui --topic "用户认证系统"
+# 交互式模式（推荐）- REPL 斜杠命令
+debate-prd-interactive
 
 # CLI 模式 - 传统命令行
 debate-prd --topic "用户认证系统" --preset pm_vs_dev
 ```
 
-### TUI 快捷键
+### 交互式模式命令
 
-| 键 | 功能 |
-|---|------|
-| `B` | 开始辩论 |
-| `S` | 停止辩论 |
-| `Q` | 退出 |
+| 命令 | 说明 |
+|------|------|
+| `/help` | 显示帮助信息 |
+| `/config [key] [value]` | 查看/设置配置 |
+| `/presets` | 显示预设角色列表 |
+| `/status` | 显示当前状态 |
+| `/start` | 启动辩论 |
+| `/quit` | 退出交互模式 |
+| `<文本>` | 直接设置议题 |
+
+**交互式模式用法：**
+```bash
+debate-prd-interactive
+> /help                      # 显示命令列表
+> /config                    # 查看当前配置
+> /config model gpt-4o       # 修改模型
+> 用户认证系统               # 设置议题
+> /start                     # 启动辩论
+```
 
 ## 🎭 预设角色组合
 
@@ -75,22 +89,6 @@ debate-prd --topic "用户认证系统" --preset pm_vs_dev
 | `pm_vs_dev` | PM（产品价值） | Dev（技术可行性） | 产品 vs 实现 |
 | `business_vs_security` | Business（业务增长） | Security（安全合规） | 速度 vs 安全 |
 | `ux_vs_architecture` | UX（用户体验） | Arch（系统稳定） | 易用 vs 性能 |
-
-## 🖥️ TUI 界面
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│ 辩论式 PRD 生成                                               │
-├─────────────┬──────────────────────────┬────────────────────┤
-│ 状态        │  消息卡片                 │ PRD 预览           │
-│ 待开始      │  【PM】产品价值优先...     │                    │
-│ 议题        │  【Dev】技术成本考量...    │ # PRD: ...         │
-│ 轮数        │  ...                      │                    │
-│ 预设        │                           │                    │
-├─────────────┴──────────────────────────┴────────────────────┤
-│ [B]开始 [S]停止 [Q]退出                                       │
-└──────────────────────────────────────────────────────────────┘
-```
 
 ## 🛠️ 架构设计
 
@@ -110,7 +108,18 @@ src/debate_prd/
 │   └ prd_generator.py   # PRD 生成器
 └── cli/                  # CLI 入口
     ├── main.py           # 传统 CLI
-    └── tui.py            # TUI 界面
+    ├── interactive.py    # 交互式 REPL 模式
+    ├── session.py        # 会话状态管理
+    ├── commands/         # 斜杠命令系统
+    │   ├── base.py       # 命令注册与处理器
+    │   ├── help.py       # 帮助命令
+    │   ├── config.py     # 配置命令
+    │   ├── presets.py    # 预设命令
+    │   ├── status.py     # 状态命令
+    │   ├── start.py      # 启动命令
+    │   └ quit.py        # 退出命令
+    ├── theme.py          # CLI 颜色主题
+    └── formatting.py     # Rich 输出工具
 ```
 
 ## 📁 记忆系统
@@ -125,15 +134,24 @@ Agent 记忆存储在 `.claude/agent-memory/`：
 
 ## 🔧 命令行参数
 
+**debate-prd（CLI 模式）：**
+
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `--tui` | 启动 TUI 模式 | False |
 | `--api-key` | API Key | `$OPENAI_API_KEY` |
 | `--base-url` | API Base URL | `https://api.openai.com/v1` |
 | `--model` | 模型名称 | `gpt-4o-mini` |
 | `--preset` | 角色预设 | `pm_vs_dev` |
 | `--topic` | 辩论议题 | 交互输入 |
 | `--max-rounds` | 最大辩论轮数 | `10` |
+| `--output-dir` | PRD 输出目录 | `./output` |
+
+**debate-prd-interactive（REPL 模式）：**
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--preset` | 角色预设 | `pm_vs_dev` |
+| `--max-rounds` | 最大辩论轮数 | `6` |
 | `--output-dir` | PRD 输出目录 | `./output` |
 
 ## 🤝 贡献
