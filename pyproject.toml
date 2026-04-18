@@ -10,7 +10,6 @@ dependencies = [
     "openai>=1.0",
     "tiktoken>=0.5",
     "aioconsole>=0.6",
-    "textual>=0.47",
     "rich>=13.0",
     "typer>=0.9",
     "jieba>=0.42",
@@ -24,7 +23,6 @@ dev = [
 
 [project.scripts]
 debate-prd = "debate_prd.cli.main:main"
-debate-prd-tui = "debate_prd.cli.tui:run_tui"
 
 [build-system]
 requires = ["setuptools>=61.0"]

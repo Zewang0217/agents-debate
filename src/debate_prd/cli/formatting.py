@@ -10,75 +10,117 @@ from rich.panel import Panel
 from rich.style import Style
 from rich.align import Align
 
-from .theme import COLORS, ERROR, WARNING, SUCCESS, INFO, PRIMARY, TEXT_PRIMARY, TEXT_MUTED, SECONDARY
+from .theme import (
+    COLORS,
+    ERROR,
+    WARNING,
+    SUCCESS,
+    INFO,
+    PRIMARY,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    TEXT_MUTED,
+    SECONDARY,
+)
 
 console = Console()
 
 
-# === ASCII Art Logo ===
-ASCII_LOGO = """
-  ╭──────────────────────────────────────╮
-  │                                      │
-  │    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀    │
-  │    ▐  DEBATE PRD  ▐  ⚔️ 辩论生成   │    │
-  │    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄    │
-  │                                      │
-  │    Two Agents. One PRD. Zero BS.    │
-  │                                      │
-  ╰──────────────────────────────────────╯
+BRAND_LOGO = """
+    ╭─────────────────────────────────────╮
+    │                                     │
+    │   🌹  DEBATE PRD                    │
+    │   ─────────────────                 │
+    │   Two Agents. One PRD. Zero BS.     │
+    │                                     │
+    ╰─────────────────────────────────────╯
 """
 
+BRAND_TAGLINE = "辩论式 PRD 生成系统"
 
-def print_logo() -> None:
-    """打印品牌 Logo"""
+
+def print_brand_header(model: str = "", preset: str = "") -> None:
+    """打印品牌标识头部"""
     logo_text = Text()
-    logo_text.append(ASCII_LOGO, style=Style(color=PRIMARY))
+    logo_text.append(BRAND_LOGO, style=Style(color=PRIMARY))
     console.print(Align.center(logo_text))
+
+    tagline_text = Text()
+    tagline_text.append(BRAND_TAGLINE, style=Style(color=TEXT_SECONDARY))
+    console.print(Align.center(tagline_text))
+    console.print()
+
+    if model:
+        info_text = Text()
+        info_text.append("模型: ", style=Style(color=PRIMARY))
+        info_text.append(model, style=Style(color=TEXT_PRIMARY))
+        console.print(info_text)
+
+    if preset:
+        preset_text = Text()
+        preset_text.append("预设: ", style=Style(color=PRIMARY))
+        preset_text.append(preset, style=Style(color=TEXT_PRIMARY))
+        console.print(preset_text)
+
+    hint_text = Text()
+    hint_text.append("按 Ctrl+C 可随时退出", style=Style(color=TEXT_SECONDARY))
+    console.print(hint_text)
+    console.print()
+
+
+def phase_separator(phase: str) -> None:
+    """打印阶段切换分隔线"""
+    console.print()
+    text = Text()
+    text.append("━━━ ", style=Style(color=TEXT_MUTED))
+    text.append(f"阶段: {phase}", style=Style(color=PRIMARY, bold=True))
+    text.append(" ━━━", style=Style(color=TEXT_MUTED))
+    console.print(text)
     console.print()
 
 
 def status_success(message: str) -> None:
     """成功状态: [ ✓ ] 任务执行成功"""
     text = Text()
-    text.append("[ ", style=Style(color=TEXT_PRIMARY))
+    text.append("[ ", style=Style(color=SUCCESS))
     text.append("✓", style=Style(color=SUCCESS, bold=True))
-    text.append(" ] ", style=Style(color=TEXT_PRIMARY))
-    text.append(message, style=Style(color=SUCCESS))
+    text.append(" ] ", style=Style(color=SUCCESS))
+    text.append(message, style=Style(color=TEXT_PRIMARY))
     console.print(text)
 
 
 def status_error(message: str) -> None:
     """错误状态: [ ✗ ] 找不到指定文件"""
     text = Text()
-    text.append("[ ", style=Style(color=TEXT_PRIMARY))
+    text.append("[ ", style=Style(color=ERROR))
     text.append("✗", style=Style(color=ERROR, bold=True))
-    text.append(" ] ", style=Style(color=TEXT_PRIMARY))
-    text.append(message, style=Style(color=ERROR))
+    text.append(" ] ", style=Style(color=ERROR))
+    text.append(message, style=Style(color=TEXT_PRIMARY))
     console.print(text)
 
 
 def status_warning(message: str) -> None:
     """警告状态: [ ! ] 空间即将不足"""
     text = Text()
-    text.append("[ ", style=Style(color=TEXT_PRIMARY))
+    text.append("[ ", style=Style(color=WARNING))
     text.append("!", style=Style(color=WARNING, bold=True))
-    text.append(" ] ", style=Style(color=TEXT_PRIMARY))
-    text.append(message, style=Style(color=WARNING))
+    text.append(" ] ", style=Style(color=WARNING))
+    text.append(message, style=Style(color=TEXT_PRIMARY))
     console.print(text)
 
 
 def status_info(message: str) -> None:
     """信息状态: [ i ] 正在下载依赖..."""
     text = Text()
-    text.append("[ ", style=Style(color=TEXT_PRIMARY))
+    text.append("[ ", style=Style(color=INFO))
     text.append("i", style=Style(color=INFO, bold=True))
-    text.append(" ] ", style=Style(color=TEXT_PRIMARY))
+    text.append(" ] ", style=Style(color=INFO))
     text.append(message, style=Style(color=TEXT_PRIMARY))
     console.print(text)
 
 
 def prompt_symbol(path: str = "~/project") -> Text:
-    """Prompt 提示符: ➜ ~/project ❯ """
+    """Prompt 提示符: ➜ ~/project ❯"""
     text = Text()
     text.append("➜ ", style=Style(color=PRIMARY))
     text.append(path, style=Style(color=INFO))

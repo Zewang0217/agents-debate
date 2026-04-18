@@ -8,12 +8,21 @@ import signal
 
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.text import Text
+from rich.style import Style
 
 from ..config.presets import list_presets
 from ..config.settings import Settings, LLMConfig
 from ..output.prd_generator import PRDGenerator
-from .formatting import status_success, status_error, status_warning, print_panel
-from .theme import COLORS, PRIMARY
+from .formatting import (
+    status_success,
+    status_error,
+    status_warning,
+    print_panel,
+    print_brand_header,
+    phase_separator,
+)
+from .theme import COLORS, PRIMARY, TEXT_MUTED
 
 console = Console()
 
@@ -30,15 +39,22 @@ def _signal_handler(signum, frame):
 
 
 def _get_role_colors(role: str) -> tuple[str, str]:
-    """获取角色颜色"""
+    """获取角色颜色
+
+    颜色语义：
+    - PM: IRIS (紫) - 主色调，产品视角
+    - Dev: FOAM (青) - 技术视角，冷静专业
+    - Moderator: PINE (绿) - 协调者，成功/稳定
+    - User: ROSE (粉) - 用户，次要高亮
+    """
     if role == "PM":
         return (COLORS.IRIS, f"bold {COLORS.IRIS}")
     elif role == "Dev":
-        return (COLORS.GOLD, f"bold {COLORS.GOLD}")
+        return (COLORS.FOAM, f"bold {COLORS.FOAM}")
     elif role == "Moderator":
         return (COLORS.PINE, f"bold {COLORS.PINE}")
     else:
-        return (COLORS.TEXT, f"bold {COLORS.TEXT}")
+        return (COLORS.ROSE, f"bold {COLORS.ROSE}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,17 +101,15 @@ def main():
     args = parse_args()
 
     if not args.api_key:
-        console.print(f"[{COLORS.LOVE}]错误: 未提供 API Key[/{COLORS.LOVE}]")
+        console.print()
+        status_error("未提供 API Key")
         console.print(
             f"[{COLORS.TEXT}]请通过 --api-key 参数或 OPENAI_API_KEY 环境变量设置[/{COLORS.TEXT}]"
         )
         sys.exit(1)
 
     console.print()
-    console.print(f"[{PRIMARY}]模型:[/{PRIMARY}] {args.model}")
-    console.print(f"[{PRIMARY}]预设:[/{PRIMARY}] {args.preset}")
-    console.print(f"[{COLORS.SUBTLE}]按 Ctrl+C 可随时退出[/{COLORS.SUBTLE}]")
-    console.print()
+    print_brand_header(args.model, args.preset)
 
     llm_config = LLMConfig(
         api_key=args.api_key, base_url=args.base_url, model=args.model
@@ -110,7 +124,10 @@ def main():
 def _input_topic() -> str:
     """交互输入议题"""
     console.print(f"[{COLORS.IRIS}]请输入辩论议题:[/{COLORS.IRIS}]")
-    topic = input("> ").strip()
+    topic_text = Text()
+    topic_text.append("> ", style=Style(color=COLORS.ROSE))
+    console.print(topic_text, end="")
+    topic = input().strip()
     return topic or "通用产品需求"
 
 
@@ -120,8 +137,8 @@ async def run_debate(
     """运行辩论"""
     console.print()
     console.print(f"[{COLORS.IRIS}]议题: {topic}[/{COLORS.IRIS}]")
-    console.print(f"[{COLORS.TEXT}]预设: {preset}[/{COLORS.TEXT}]")
-    console.print(f"[{COLORS.MUTED}]" + "-" * 40 + f"[/{COLORS.MUTED}]")
+    console.print(f"[{TEXT_MUTED}]" + "━" * 40 + f"[/{TEXT_MUTED}]")
+    console.print()
 
     moderator = None
     current_role_state = {"role": ""}
@@ -155,12 +172,15 @@ async def run_debate(
             event_type = event.get("type", "")
 
             if event_type == "phase_start":
-                console.print()
-                print_panel(
-                    f"进入 {event.get('phase', '')} 阶段",
-                    title="阶段切换",
-                    border_color=COLORS.IRIS,
-                )
+                phase_separator(event.get("phase", ""))
+
+            elif event_type == "sub_phase":
+                # 自由辩论模式的子阶段
+                sub_phase = event.get("phase", "")
+                if sub_phase == "publish_view":
+                    console.print(f"[{COLORS.GOLD}]◆ 双方并发发表看法[/{COLORS.GOLD}]")
+                elif sub_phase == "free_debate":
+                    console.print(f"[{COLORS.GOLD}]◆ 进入自由辩论[/{COLORS.GOLD}]")
 
             elif event_type == "ask":
                 # 进入澄清问答循环
@@ -178,7 +198,7 @@ async def run_debate(
             elif event_type == "clarification_done":
                 console.print()
                 status_success("澄清阶段完成")
-                console.print(f"[{COLORS.MUTED}]" + "-" * 40 + f"[/{COLORS.MUTED}]")
+                console.print(f"[{TEXT_MUTED}]" + "━" * 40 + f"[/{TEXT_MUTED}]")
 
             elif event_type == "debate_complete":
                 _show_complete(event, preset, topic, output_dir)
@@ -192,9 +212,13 @@ async def run_debate(
 
             elif event_type == "moderator":
                 console.print()
-                console.print(
-                    f"[{COLORS.PINE}]● Moderator:[/{COLORS.PINE}] {event.get('content', '')}"
+                text = Text()
+                text.append("● ", style=Style(color=COLORS.PINE))
+                text.append("Moderator:", style=Style(color=COLORS.PINE, bold=True))
+                text.append(
+                    f" {event.get('content', '')}", style=Style(color=COLORS.TEXT)
                 )
+                console.print(text)
 
             elif event_type == "error":
                 status_error(event.get("message", "错误"))
@@ -220,8 +244,16 @@ async def _clarification_loop(
         # 显示问题并获取回答
         question = event.get("question", "")
         console.print()
-        console.print(f"[{COLORS.PINE}]● Moderator:[/{COLORS.PINE}] {question}")
-        console.print(f"[{COLORS.IRIS}]你的回答:[/{COLORS.IRIS}]", end=" ")
+        text = Text()
+        text.append("● ", style=Style(color=COLORS.PINE))
+        text.append("Moderator:", style=Style(color=COLORS.PINE, bold=True))
+        text.append(f" {question}", style=Style(color=COLORS.TEXT))
+        console.print(text)
+
+        answer_prompt = Text()
+        answer_prompt.append("你的回答: ", style=Style(color=COLORS.IRIS))
+        answer_prompt.append("> ", style=Style(color=COLORS.ROSE))
+        console.print(answer_prompt, end=" ")
         answer = await asyncio.to_thread(input)
         moderator.submit_user_answer(answer)
 
@@ -241,19 +273,19 @@ async def _clarification_loop(
                 status_success("PRD基础版生成完成")
 
             elif t == "clarification_done":
-                # 澄清完成，继续消费辩论阶段事件（不退出循环）
                 console.print()
                 status_success("澄清阶段完成")
-                console.print(f"[{COLORS.MUTED}]" + "-" * 40 + f"[/{COLORS.MUTED}]")
+                console.print(f"[{TEXT_MUTED}]" + "━" * 40 + f"[/{TEXT_MUTED}]")
 
             elif t == "phase_start":
-                # 辩论阶段开始
-                console.print()
-                print_panel(
-                    f"进入 {e.get('phase', '')} 阶段",
-                    title="阶段切换",
-                    border_color=COLORS.IRIS,
-                )
+                phase_separator(e.get("phase", ""))
+
+            elif t == "sub_phase":
+                sub_phase = e.get("phase", "")
+                if sub_phase == "publish_view":
+                    console.print(f"[{COLORS.GOLD}]◆ 双方并发发表看法[/{COLORS.GOLD}]")
+                elif sub_phase == "free_debate":
+                    console.print(f"[{COLORS.GOLD}]◆ 进入自由辩论[/{COLORS.GOLD}]")
 
             elif t == "debate_complete":
                 # 辩论完成
@@ -268,9 +300,11 @@ async def _clarification_loop(
 
             elif t == "moderator":
                 console.print()
-                console.print(
-                    f"[{COLORS.PINE}]● Moderator:[/{COLORS.PINE}] {e.get('content', '')}"
-                )
+                text = Text()
+                text.append("● ", style=Style(color=COLORS.PINE))
+                text.append("Moderator:", style=Style(color=COLORS.PINE, bold=True))
+                text.append(f" {e.get('content', '')}", style=Style(color=COLORS.TEXT))
+                console.print(text)
 
             elif t == "error":
                 status_error(e.get("message", "错误"))
@@ -321,8 +355,8 @@ def _print_token(event: dict, state: dict, console: Console):
 def _print_complete(console: Console):
     """打印完成标记"""
     console.print()
-    console.print(f"[{COLORS.SUBTLE}]✓ 完成[/{COLORS.SUBTLE}]")
-    console.print(f"[{COLORS.MUTED}]" + "-" * 40 + f"[/{COLORS.MUTED}]")
+    console.print(f"[{COLORS.PINE}]✓ 完成[/{COLORS.PINE}]")
+    console.print(f"[{TEXT_MUTED}]" + "━" * 40 + f"[/{TEXT_MUTED}]")
 
 
 def _show_complete(event: dict, preset: str, topic: str, output_dir: str):
