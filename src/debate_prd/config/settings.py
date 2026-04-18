@@ -23,13 +23,15 @@ class LLMConfig:
     max_tokens: int = 2048
     """最大输出 token 数"""
 
-    model_info: dict = field(default_factory=lambda: {
-        "vision": False,
-        "function_calling": True,
-        "json_output": True,
-        "family": "unknown",
-        "structured_output": True,
-    })
+    model_info: dict = field(
+        default_factory=lambda: {
+            "vision": False,
+            "function_calling": True,
+            "json_output": True,
+            "family": "unknown",
+            "structured_output": True,
+        }
+    )
     """模型能力信息（非OpenAI模型必需）"""
 
     def __post_init__(self):
@@ -64,7 +66,9 @@ class LLMConfig:
                 "structured_output": True,
             }
         # Ollama本地模型
-        elif self.base_url and ("localhost" in self.base_url or "11434" in self.base_url):
+        elif self.base_url and (
+            "localhost" in self.base_url or "11434" in self.base_url
+        ):
             self.model_info = {
                 "vision": False,
                 "function_calling": True,
@@ -125,12 +129,29 @@ class Settings:
     max_total_rounds: int = 20
     """总轮数上限（含澄清和介入），超过强制终止"""
 
+    # 问答阶段配置（新增）
+    questioning_rounds: int = 5
+    """问答轮数（默认5轮）"""
+
+    questioning_required: bool = True
+    """是否强制进行问答阶段"""
+
     # 触发条件
     intervention_keyword: str = "仲裁"
     """用户触发介入的关键词"""
 
     stalemate_rounds: int = 3
     """僵局检测：连续 N 轮无新观点则判定僵局"""
+
+    # 偏题检测配置（新增）
+    off_topic_threshold: float = 0.3
+    """偏题检测阈值：关键词重叠度低于此值视为偏题"""
+
+    off_topic_trigger_count: int = 2
+    """连续偏题多少次触发Tool询问"""
+
+    pause_on_off_topic: bool = False
+    """偏题时是否暂停辩论等待用户确认"""
 
     # 输出
     prd_output_dir: str = "./output"
@@ -144,7 +165,7 @@ class Settings:
     """澄清阶段的最多轮数"""
 
     consensus_threshold: float = 0.7
-    """共识阈值：70% 以上议题达成共识视为完成"""
+    """共识阈值：50% 以上议题达成共识视为完成"""
 
 
 # 默认配置实例

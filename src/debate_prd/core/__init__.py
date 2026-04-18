@@ -24,10 +24,17 @@ from .spawn.debater_agent import (
 )
 
 from .debate_loop import (
-    DebateState,
-    DebateModerator,
+    ModeratorState,
+    ClarificationState,
+    ClarificationModerator,
     run_debate,
     run_debate_stream,
+)
+
+from .tools.ask_user import (
+    AskUserTool,
+    AskUserRequest,
+    AskUserResponse,
 )
 
 
@@ -50,8 +57,13 @@ __all__ = [
     "DebaterAgent",
     "create_debater_pair",
     # Loop
-    "DebateState",
-    "DebateModerator",
+    "ModeratorState",
+    "ClarificationState",
+    "ClarificationModerator",
     "run_debate",
     "run_debate_stream",
+    # Tools
+    "AskUserTool",
+    "AskUserRequest",
+    "AskUserResponse",
 ]

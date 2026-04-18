@@ -8,6 +8,7 @@ class DebaterConfig(TypedDict):
     role: str
     stance: str
     focus_areas: list[str]
+    style: str  # 语言风格
 
 
 class PresetConfig(TypedDict):
@@ -29,6 +30,7 @@ DEBATER_PRESETS: dict[str, PresetConfig] = {
                 "功能完整性和优先级",
                 "快速迭代验证",
             ],
+            "style": "简洁有力，用数据和用户场景说话，避免抽象概念",
         },
         "debater2": {
             "role": "Dev",
@@ -39,6 +41,7 @@ DEBATER_PRESETS: dict[str, PresetConfig] = {
                 "开发成本和时间",
                 "技术债务和风险",
             ],
+            "style": "务实直接，用技术事实说话，指出具体风险和成本",
         },
     },
     "business_vs_security": {
@@ -52,6 +55,7 @@ DEBATER_PRESETS: dict[str, PresetConfig] = {
                 "用户增长和转化",
                 "快速上线验证",
             ],
+            "style": "激进但理性，用增长数据和机会窗口说话，强调时效性",
         },
         "debater2": {
             "role": "Security",
@@ -62,6 +66,7 @@ DEBATER_PRESETS: dict[str, PresetConfig] = {
                 "安全漏洞风险",
                 "权限和审计",
             ],
+            "style": "严谨保守，用合规条款和风险案例说话，不轻易妥协",
         },
     },
     "ux_vs_architecture": {
@@ -75,6 +80,7 @@ DEBATER_PRESETS: dict[str, PresetConfig] = {
                 "交互反馈和响应",
                 "易用性和学习成本",
             ],
+            "style": "感性但有逻辑，用用户旅程和痛点说话，强调体验细节",
         },
         "debater2": {
             "role": "Arch",
@@ -85,6 +91,7 @@ DEBATER_PRESETS: dict[str, PresetConfig] = {
                 "资源消耗和成本",
                 "维护和升级难度",
             ],
+            "style": "理性务实，用架构图和性能指标说话，指出技术边界",
         },
     },
 }
