@@ -817,9 +817,10 @@ class DebateModerator:
             return self.debater1
 
     def _check_termination(self) -> bool:
-        """检查终止条件 - 加权共识计算"""
-        MIN_ROUNDS_BEFORE_CONSENSUS_CHECK = 3
-        if self._debate_state.round_num < MIN_ROUNDS_BEFORE_CONSENSUS_CHECK:
+        """检查终止条件 - 多维度判定"""
+        MIN_ROUNDS_BEFORE_TERMINATION = 4  # 至少4轮才开始检查
+
+        if self._debate_state.round_num < MIN_ROUNDS_BEFORE_TERMINATION:
             return False
 
         # 轮数上限（兜底）
@@ -829,27 +830,44 @@ class DebateModerator:
             return True
 
         # 加权共识计算
-        # AGREE权重=1.0, PARTIAL_AGREE权重=0.5
-        consensus_score = len(self._debate_state.agree_points) * 1.0 + \
-                          len(self._debate_state.partial_agree_points) * 0.5
-        disagreement_score = len(self._debate_state.disagreement_points) * 1.0
+        agree_count = len(self._debate_state.agree_points)
+        partial_count = len(self._debate_state.partial_agree_points)
+        disagree_count = len(self._debate_state.disagreement_points)
 
-        # 条件1：无分歧且共识比例足够高（阈值提高到4.0）
-        if disagreement_score == 0 and consensus_score >= 4.0:
+        consensus_score = agree_count * 1.0 + partial_count * 0.5
+        total_score = consensus_score + disagree_count
+
+        # 条件1：高强度共识（无新分歧+足够共识）
+        # 要求：最近一轮没有新增 DISAGREE，且共识得分足够高
+        if disagree_count == 0 and consensus_score >= 5.0:
             self._debate_state.terminated = True
             self._debate_state.termination_reason = "达成共识"
             return True
 
-        # 条件2：僵局检测（独立于 total_score 检查）
-        if self._debate_state.stalemate_count >= 2:
+        # 条件2：低分歧共识（有少量分歧但共识更强）
+        # 要求：分歧 < 3，且共识得分远超分歧
+        if disagree_count < 3 and consensus_score >= disagree_count * 2 + 3:
             self._debate_state.terminated = True
-            self._debate_state.termination_reason = "辩论僵局"
+            self._debate_state.termination_reason = "共识为主"
             return True
 
-        # 条件3：有分歧但接近上限轮数（设置 reason 防止遗漏）
-        if self._debate_state.round_num >= self.settings.max_rounds - 1 and disagreement_score > 0:
+        # 条件3：僵局检测（连续2轮无新观点）
+        if self._debate_state.stalemate_count >= 2:
             self._debate_state.terminated = True
-            self._debate_state.termination_reason = "分歧未解决"
+            if disagree_count > 0:
+                self._debate_state.termination_reason = "辩论僵局"
+            else:
+                self._debate_state.termination_reason = "观点稳定"
+            return True
+
+        # 条件4：充分辩论（轮数足够+观点数量足够）
+        # 要求：至少6轮，且至少有5个观点（共识或分歧）
+        if self._debate_state.round_num >= 6 and total_score >= 5:
+            self._debate_state.terminated = True
+            if disagree_count > agree_count:
+                self._debate_state.termination_reason = "分歧为主"
+            else:
+                self._debate_state.termination_reason = "充分辩论"
             return True
 
         return False
@@ -858,7 +876,7 @@ class DebateModerator:
         """从内容中提取共识点和分歧点（带去重，区分类型）"""
         import re
 
-        # 分别提取 AGREE、CONSENSUS、PARTIAL_AGREE（支持无内容格式）
+        # 使用 DOTALL flag 支持多行内容匹配
         # 格式1: [AGREE:content] - 有具体内容
         # 格式2: [AGREE] - 仅标记（提取上下文句）
         agree_pattern_with_content = r"\[AGREE:([^\]]+)\]"
@@ -869,17 +887,17 @@ class DebateModerator:
         partial_agree_pattern_no_content = r"\[PARTIAL_AGREE\](?!\s*:)"
 
         # AGREE - 完全共识（有内容）
-        agree_matches = re.findall(agree_pattern_with_content, content)
+        agree_matches = re.findall(agree_pattern_with_content, content, re.DOTALL)
         for match in agree_matches:
-            if match and match not in self._debate_state.agree_points:
-                self._debate_state.agree_points.append(match)
-                if match not in self._debate_state.consensus_points:
-                    self._debate_state.consensus_points.append(match)
+            point = match.strip()
+            if point and point not in self._debate_state.agree_points:
+                self._debate_state.agree_points.append(point)
+                if point not in self._debate_state.consensus_points:
+                    self._debate_state.consensus_points.append(point)
 
         # AGREE - 完全共识（无内容时提取前后文）
         agree_no_content_matches = re.findall(agree_pattern_no_content, content)
         for _ in agree_no_content_matches:
-            # 提取标记前的句子作为内容
             context_match = re.search(r"([^\n]{0,50})\[AGREE\]", content)
             if context_match:
                 point = context_match.group(1).strip() or "同意"
@@ -889,12 +907,13 @@ class DebateModerator:
                         self._debate_state.consensus_points.append(point)
 
         # CONSENSUS - 完全共识（同AGREE处理）
-        consensus_matches = re.findall(consensus_pattern_with_content, content)
+        consensus_matches = re.findall(consensus_pattern_with_content, content, re.DOTALL)
         for match in consensus_matches:
-            if match and match not in self._debate_state.agree_points:
-                self._debate_state.agree_points.append(match)
-                if match not in self._debate_state.consensus_points:
-                    self._debate_state.consensus_points.append(match)
+            point = match.strip()
+            if point and point not in self._debate_state.agree_points:
+                self._debate_state.agree_points.append(point)
+                if point not in self._debate_state.consensus_points:
+                    self._debate_state.consensus_points.append(point)
 
         consensus_no_content_matches = re.findall(consensus_pattern_no_content, content)
         for _ in consensus_no_content_matches:
@@ -907,12 +926,13 @@ class DebateModerator:
                         self._debate_state.consensus_points.append(point)
 
         # PARTIAL_AGREE - 部分共识（有内容）
-        partial_matches = re.findall(partial_agree_pattern_with_content, content)
+        partial_matches = re.findall(partial_agree_pattern_with_content, content, re.DOTALL)
         for match in partial_matches:
-            if match and match not in self._debate_state.partial_agree_points:
-                self._debate_state.partial_agree_points.append(match)
-                if match not in self._debate_state.consensus_points:
-                    self._debate_state.consensus_points.append(match)
+            point = match.strip()
+            if point and point not in self._debate_state.partial_agree_points:
+                self._debate_state.partial_agree_points.append(point)
+                if point not in self._debate_state.consensus_points:
+                    self._debate_state.consensus_points.append(point)
 
         # PARTIAL_AGREE - 部分共识（无内容时提取前后文）
         partial_no_content_matches = re.findall(partial_agree_pattern_no_content, content)
@@ -929,10 +949,11 @@ class DebateModerator:
         disagree_pattern_with_content = r"\[DISAGREE:([^\]]+)\]"
         disagree_pattern_no_content = r"\[DISAGREE\](?!\s*:)"
 
-        disagree_matches = re.findall(disagree_pattern_with_content, content)
+        disagree_matches = re.findall(disagree_pattern_with_content, content, re.DOTALL)
         for match in disagree_matches:
-            if match and match not in self._debate_state.disagreement_points:
-                self._debate_state.disagreement_points.append(match)
+            point = match.strip()
+            if point and point not in self._debate_state.disagreement_points:
+                self._debate_state.disagreement_points.append(point)
 
         disagree_no_content_matches = re.findall(disagree_pattern_no_content, content)
         for _ in disagree_no_content_matches:
@@ -942,7 +963,7 @@ class DebateModerator:
                 if point not in self._debate_state.disagreement_points:
                     self._debate_state.disagreement_points.append(point)
 
-        # Fallback：检查是否有任何匹配，而非仅检查标记存在
+        # Fallback：检查是否有任何匹配
         has_any_match = (
             agree_matches or agree_no_content_matches or
             consensus_matches or consensus_no_content_matches or
@@ -951,7 +972,6 @@ class DebateModerator:
         )
 
         if not has_any_match:
-            # 尝试提取"问题/反驳"标题行
             problem_pattern = r"###?\s*(问题\d|反驳点|挑战)[：:\s]*([^\n]+)"
             problem_matches = re.findall(problem_pattern, content)
 
@@ -961,7 +981,6 @@ class DebateModerator:
                     if point not in self._debate_state.disagreement_points:
                         self._debate_state.disagreement_points.append(point)
             else:
-                # 提取核心立场句（首段前80字）
                 first_para = content.split("\n\n")[0] if "\n\n" in content else content
                 stance = first_para.strip()[:80]
                 if stance and stance not in self._debate_state.disagreement_points:

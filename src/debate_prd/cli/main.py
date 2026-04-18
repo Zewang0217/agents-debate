@@ -443,9 +443,13 @@ async def _clarification_loop(
                 console.print()
                 status_success("澄清阶段完成")
                 console.print(f"[{TEXT_MUTED}]" + "━" * 40 + f"[/{TEXT_MUTED}]")
+                # 继续处理后续辩论事件，不立即返回
 
             elif t == "phase_start":
-                phase_separator(e.get("phase", ""))
+                phase = e.get("phase", "")
+                # 只显示 debate 阶段分隔符，跳过 prd_generation（已在流式输出前处理）
+                if phase == "debate":
+                    phase_separator(phase)
 
             elif t == "sub_phase":
                 sub_phase = e.get("phase", "")
@@ -470,6 +474,17 @@ async def _clarification_loop(
                 text.append("Moderator:", style=Style(color=COLORS.PINE, bold=True))
                 text.append(f" {e.get('content', '')}", style=Style(color=TEXT_PRIMARY))
                 console.print(text)
+
+            elif t == "moderator_record":
+                _print_moderator_record(e, console)
+
+            elif t == "stalemate_question":
+                await _handle_stalemate(e, moderator, preset, topic, output_dir, current_role_state)
+                return "done"
+
+            elif t == "critical_decision_question":
+                await _handle_critical_decision(e, moderator, preset, topic, output_dir, current_role_state)
+                return "done"
 
             elif t == "error":
                 status_error(e.get("message", "错误"))
