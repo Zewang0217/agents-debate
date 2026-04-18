@@ -530,13 +530,18 @@ class DebateModerator:
                 self._extract_points(event["content"])
                 recent_messages.append(event["content"])
 
+        # 并发阶段完成，展示记录汇总
+        yield self._generate_moderator_record("并发发表看法完成")
+
         # === 阶段2：自由辩论 ===
         yield {"type": "sub_phase", "phase": "free_debate"}
 
-        # 僵局检测状态
+        # 僵局检测状态 + 记录计数
         prev_agree_count = len(self._debate_state.agree_points)
         prev_partial_count = len(self._debate_state.partial_agree_points)
         prev_disagree_count = len(self._debate_state.disagreement_points)
+        record_interval = 2  # 每隔2轮展示记录
+        last_record_round = self._debate_state.round_num
 
         while not self._debate_state.terminated:
             if self._check_termination():
@@ -594,6 +599,50 @@ class DebateModerator:
 
             if not responded:
                 await asyncio.sleep(0.5)
+            else:
+                # 每隔指定轮数展示记录
+                if self._debate_state.round_num - last_record_round >= record_interval:
+                    yield self._generate_moderator_record("自由辩论进展")
+                    last_record_round = self._debate_state.round_num
+
+    def _generate_moderator_record(self, phase: str) -> dict:
+        """生成 Moderator 记录事件"""
+        agree_count = len(self._debate_state.agree_points)
+        partial_count = len(self._debate_state.partial_agree_points)
+        disagree_count = len(self._debate_state.disagreement_points)
+
+        # 计算加权共识得分
+        consensus_score = agree_count * 1.0 + partial_count * 0.5
+
+        # 构建记录内容
+        lines = [f"[{phase}] 共识进度"]
+
+        if agree_count > 0:
+            lines.append(f"  ✓ 完全共识({agree_count}):")
+            for pt in self._debate_state.agree_points[-3:]:
+                lines.append(f"    • {pt[:80]}")
+
+        if partial_count > 0:
+            lines.append(f"  ◐ 部分认同({partial_count}):")
+            for pt in self._debate_state.partial_agree_points[-3:]:
+                lines.append(f"    • {pt[:80]}")
+
+        if disagree_count > 0:
+            lines.append(f"  ✗ 待解决分歧({disagree_count}):")
+            for pt in self._debate_state.disagreement_points[-3:]:
+                lines.append(f"    • {pt[:80]}")
+
+        lines.append(f"  📊 共识得分: {consensus_score:.1f}")
+
+        return {
+            "type": "moderator_record",
+            "phase": phase,
+            "content": "\n".join(lines),
+            "agree_count": agree_count,
+            "partial_count": partial_count,
+            "disagree_count": disagree_count,
+            "consensus_score": consensus_score,
+        }
 
     def get_current_state(self) -> ModeratorState:
         """获取当前状态"""

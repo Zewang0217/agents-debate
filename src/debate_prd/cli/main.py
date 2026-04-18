@@ -221,6 +221,22 @@ async def run_debate(
                 )
                 console.print(text)
 
+            elif event_type == "moderator_record":
+                # Moderator 记录摘要
+                console.print()
+                console.print(f"[{COLORS.SUBTLE}]━━ Moderator 记录 ━━[/{COLORS.SUBTLE}]")
+                for line in event.get("content", "").split("\n"):
+                    if line.startswith("  ✓"):
+                        console.print(f"[{COLORS.PINE}]{line}[/{COLORS.PINE}]")
+                    elif line.startswith("  ◐"):
+                        console.print(f"[{COLORS.GOLD}]{line}[/{COLORS.GOLD}]")
+                    elif line.startswith("  ✗"):
+                        console.print(f"[{COLORS.ROSE}]{line}[/{COLORS.ROSE}]")
+                    elif line.startswith("  📊"):
+                        console.print(f"[{COLORS.IRIS}]{line}[/{COLORS.IRIS}]")
+                    else:
+                        console.print(f"[{COLORS.TEXT}]{line}[/{COLORS.TEXT}]")
+
             elif event_type == "error":
                 status_error(event.get("message", "错误"))
                 return
