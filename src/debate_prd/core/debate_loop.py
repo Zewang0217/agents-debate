@@ -834,21 +834,23 @@ class DebateModerator:
                           len(self._debate_state.partial_agree_points) * 0.5
         disagreement_score = len(self._debate_state.disagreement_points) * 1.0
 
-        total_score = consensus_score + disagreement_score
+        # 条件1：无分歧且共识比例足够高（阈值提高到4.0）
+        if disagreement_score == 0 and consensus_score >= 4.0:
+            self._debate_state.terminated = True
+            self._debate_state.termination_reason = "达成共识"
+            return True
 
-        if total_score > 0:
-            # 条件1：无分歧且共识比例足够高
-            if disagreement_score == 0 and consensus_score >= 3.0:
-                # 至少3个完全共识或6个部分共识才算真正达成共识
-                self._debate_state.terminated = True
-                self._debate_state.termination_reason = "达成共识"
-                return True
+        # 条件2：僵局检测（独立于 total_score 检查）
+        if self._debate_state.stalemate_count >= 2:
+            self._debate_state.terminated = True
+            self._debate_state.termination_reason = "辩论僵局"
+            return True
 
-            # 条件2：僵局检测 - 连续2轮无新观点
-            if self._debate_state.stalemate_count >= 2:
-                self._debate_state.terminated = True
-                self._debate_state.termination_reason = "辩论僵局"
-                return True
+        # 条件3：有分歧但接近上限轮数（设置 reason 防止遗漏）
+        if self._debate_state.round_num >= self.settings.max_rounds - 1 and disagreement_score > 0:
+            self._debate_state.terminated = True
+            self._debate_state.termination_reason = "分歧未解决"
+            return True
 
         return False
 
@@ -856,49 +858,100 @@ class DebateModerator:
         """从内容中提取共识点和分歧点（带去重，区分类型）"""
         import re
 
-        # 分别提取 AGREE、CONSENSUS、PARTIAL_AGREE
-        agree_pattern = r"\[AGREE:([^\]]+)\]"
-        consensus_pattern = r"\[CONSENSUS:([^\]]+)\]"
-        partial_agree_pattern = r"\[PARTIAL_AGREE:([^\]]+)\]"
+        # 分别提取 AGREE、CONSENSUS、PARTIAL_AGREE（支持无内容格式）
+        # 格式1: [AGREE:content] - 有具体内容
+        # 格式2: [AGREE] - 仅标记（提取上下文句）
+        agree_pattern_with_content = r"\[AGREE:([^\]]+)\]"
+        agree_pattern_no_content = r"\[AGREE\](?!\s*:)"
+        consensus_pattern_with_content = r"\[CONSENSUS:([^\]]+)\]"
+        consensus_pattern_no_content = r"\[CONSENSUS\](?!\s*:)"
+        partial_agree_pattern_with_content = r"\[PARTIAL_AGREE:([^\]]+)\]"
+        partial_agree_pattern_no_content = r"\[PARTIAL_AGREE\](?!\s*:)"
 
-        # AGREE - 完全共识
-        agree_matches = re.findall(agree_pattern, content)
+        # AGREE - 完全共识（有内容）
+        agree_matches = re.findall(agree_pattern_with_content, content)
         for match in agree_matches:
             if match and match not in self._debate_state.agree_points:
                 self._debate_state.agree_points.append(match)
-                # 同时加入兼容列表
                 if match not in self._debate_state.consensus_points:
                     self._debate_state.consensus_points.append(match)
 
-        # CONSENSUS - 完全共识（同AGREE）
-        consensus_matches = re.findall(consensus_pattern, content)
+        # AGREE - 完全共识（无内容时提取前后文）
+        agree_no_content_matches = re.findall(agree_pattern_no_content, content)
+        for _ in agree_no_content_matches:
+            # 提取标记前的句子作为内容
+            context_match = re.search(r"([^\n]{0,50})\[AGREE\]", content)
+            if context_match:
+                point = context_match.group(1).strip() or "同意"
+                if point not in self._debate_state.agree_points:
+                    self._debate_state.agree_points.append(point)
+                    if point not in self._debate_state.consensus_points:
+                        self._debate_state.consensus_points.append(point)
+
+        # CONSENSUS - 完全共识（同AGREE处理）
+        consensus_matches = re.findall(consensus_pattern_with_content, content)
         for match in consensus_matches:
             if match and match not in self._debate_state.agree_points:
                 self._debate_state.agree_points.append(match)
                 if match not in self._debate_state.consensus_points:
                     self._debate_state.consensus_points.append(match)
 
-        # PARTIAL_AGREE - 部分共识（权重0.5）
-        partial_matches = re.findall(partial_agree_pattern, content)
+        consensus_no_content_matches = re.findall(consensus_pattern_no_content, content)
+        for _ in consensus_no_content_matches:
+            context_match = re.search(r"([^\n]{0,50})\[CONSENSUS\]", content)
+            if context_match:
+                point = context_match.group(1).strip() or "共识"
+                if point not in self._debate_state.agree_points:
+                    self._debate_state.agree_points.append(point)
+                    if point not in self._debate_state.consensus_points:
+                        self._debate_state.consensus_points.append(point)
+
+        # PARTIAL_AGREE - 部分共识（有内容）
+        partial_matches = re.findall(partial_agree_pattern_with_content, content)
         for match in partial_matches:
             if match and match not in self._debate_state.partial_agree_points:
                 self._debate_state.partial_agree_points.append(match)
                 if match not in self._debate_state.consensus_points:
                     self._debate_state.consensus_points.append(match)
 
-        # 提取分歧点（DISAGREE）- 去重
-        disagree_pattern = r"\[DISAGREE:([^\]]+)\]"
-        disagree_matches = re.findall(disagree_pattern, content)
+        # PARTIAL_AGREE - 部分共识（无内容时提取前后文）
+        partial_no_content_matches = re.findall(partial_agree_pattern_no_content, content)
+        for _ in partial_no_content_matches:
+            context_match = re.search(r"([^\n]{0,50})\[PARTIAL_AGREE\]", content)
+            if context_match:
+                point = context_match.group(1).strip() or "部分认同"
+                if point not in self._debate_state.partial_agree_points:
+                    self._debate_state.partial_agree_points.append(point)
+                    if point not in self._debate_state.consensus_points:
+                        self._debate_state.consensus_points.append(point)
+
+        # 提取分歧点（DISAGREE）- 支持两种格式
+        disagree_pattern_with_content = r"\[DISAGREE:([^\]]+)\]"
+        disagree_pattern_no_content = r"\[DISAGREE\](?!\s*:)"
+
+        disagree_matches = re.findall(disagree_pattern_with_content, content)
         for match in disagree_matches:
             if match and match not in self._debate_state.disagreement_points:
                 self._debate_state.disagreement_points.append(match)
 
-        # 无明确标记时的 fallback：提取核心观点而非截断全文
-        if not any(
-            marker in content
-            for marker in ["[AGREE", "[PARTIAL_AGREE", "[CONSENSUS", "[DISAGREE"]
-        ):
-            # 尝试提取"问题/反驳"标题行（而非整个段落）
+        disagree_no_content_matches = re.findall(disagree_pattern_no_content, content)
+        for _ in disagree_no_content_matches:
+            context_match = re.search(r"([^\n]{0,50})\[DISAGREE\]", content)
+            if context_match:
+                point = context_match.group(1).strip() or "分歧"
+                if point not in self._debate_state.disagreement_points:
+                    self._debate_state.disagreement_points.append(point)
+
+        # Fallback：检查是否有任何匹配，而非仅检查标记存在
+        has_any_match = (
+            agree_matches or agree_no_content_matches or
+            consensus_matches or consensus_no_content_matches or
+            partial_matches or partial_no_content_matches or
+            disagree_matches or disagree_no_content_matches
+        )
+
+        if not has_any_match:
+            # 尝试提取"问题/反驳"标题行
             problem_pattern = r"###?\s*(问题\d|反驳点|挑战)[：:\s]*([^\n]+)"
             problem_matches = re.findall(problem_pattern, content)
 
@@ -908,7 +961,7 @@ class DebateModerator:
                     if point not in self._debate_state.disagreement_points:
                         self._debate_state.disagreement_points.append(point)
             else:
-                # 提取核心立场句（首段前80字，而非全文截断）
+                # 提取核心立场句（首段前80字）
                 first_para = content.split("\n\n")[0] if "\n\n" in content else content
                 stance = first_para.strip()[:80]
                 if stance and stance not in self._debate_state.disagreement_points:
