@@ -14,9 +14,10 @@ An innovative PRD generation system where two AI agents with different perspecti
 - **🤖 AI Debate System**: Two agents debate from different perspectives (PM vs Dev, Business vs Security, UX vs Architecture)
 - **💬 Message-based Architecture**: Agents communicate through message passing, enabling true "argument" style debates
 - **🧠 Memory System**: Each agent has persistent memory (project scope), learning from past debates
-- **🎨 Cool TUI Interface**: Dark theme with card-style message display
+- **🎯 Weighted Consensus Detection**: Automatically detects consensus or stalemate with weighted scoring (AGREE=1.0, PARTIAL_AGREE=0.5, DISAGREE=1.0)
+- **👤 User Intervention**: Moderator asks for user input on critical decisions or stalemates
+- **📝 Auto PRD Generation**: Markdown-formatted PRD output with categorized items and consensus analysis
 - **⚙️ Flexible LLM Support**: Compatible with any OpenAI-format API (OpenAI, DeepSeek, Claude, Ollama, etc.)
-- **📝 Auto PRD Generation**: Markdown-formatted PRD output with debate summary
 
 ## 🚀 Quick Start
 
@@ -53,88 +54,78 @@ export OPENAI_MODEL=llama3
 ### Run
 
 ```bash
-# Interactive Mode (Recommended) - REPL with slash commands
-debate-prd-interactive
+# Interactive Mode (Recommended) - Select preset, then enter topic
+debate-prd
 
-# CLI Mode - Traditional command line
-debate-prd --topic "User authentication system" --preset pm_vs_dev
+# Quick Start - Specify preset and topic
+debate-prd --preset 1 --topic "User authentication system"
+
+# View system info
+debate-prd --info
+
+# List preset roles
+debate-prd --list-presets
 ```
 
-### Interactive Mode Commands
+## 📋 Workflow
 
-| Command | Description |
-|---------|-------------|
-| `/help` | Show help information |
-| `/config [key] [value]` | View/set configuration |
-| `/presets` | List available presets |
-| `/status` | Show current status |
-| `/start` | Start debate |
-| `/quit` | Exit interactive mode |
-| `<text>` | Set debate topic directly |
-
-**Interactive Mode Usage:**
-```bash
-debate-prd-interactive
-> /help                      # Show commands
-> /config                    # View current config
-> /config model gpt-4o       # Change model
-> User authentication system # Set topic
-> /start                     # Start debate
-```
+1. **Clarification Phase** - Moderator collects requirement details through Q&A
+2. **PRD Base Generation** - Generate initial PRD summary from collected info
+3. **Debate Phase** - Agents freely express views and rebut each other
+4. **Consensus Detection** - Weighted scoring detects consensus or stalemate
+5. **User Intervention** - Moderator asks user on critical decisions or stalemates
+6. **PRD Generation** - Synthesize debate results into final document
 
 ## 🎭 Preset Role Combinations
 
-| Preset | Debater 1 | Debater 2 | Focus |
-|--------|-----------|-----------|-------|
-| `pm_vs_dev` | PM (Product Value) | Dev (Technical Feasibility) | Product vs Implementation |
-| `business_vs_security` | Business (Growth) | Security (Compliance) | Speed vs Safety |
-| `ux_vs_architecture` | UX (User Experience) | Arch (System Stability) | Usability vs Performance |
+| # | Preset | Debater 1 | Debater 2 | Focus |
+|---|--------|-----------|-----------|-------|
+| 1 | `pm_vs_dev` | PM (Product Value) | Dev (Technical Feasibility) | Product vs Implementation |
+| 2 | `business_vs_security` | Business (Growth) | Security (Compliance) | Speed vs Safety |
+| 3 | `ux_vs_architecture` | UX (User Experience) | Arch (System Stability) | Usability vs Performance |
+
+## 🏷️ Output Markers
+
+Agents use special markers to express opinions:
+
+| Marker | Meaning |
+|--------|---------|
+| `[AGREE:content]` | Full agreement |
+| `[PARTIAL_AGREE:content+suggestion]` | Partial agreement with reservation |
+| `[DISAGREE:content+reason]` | Clear disagreement (required for challenges) |
+| `[PRD_ITEM] feature description` | PRD feature suggestion |
+
+## 🔧 CLI Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--preset` | Preset number (1-3) or name | Interactive selection |
+| `--topic` | Debate topic | Interactive input |
+| `--max-rounds` | Max debate rounds | `6` |
+| `--output-dir` | PRD output directory | `./output` |
+| `--info` | Show system info | - |
+| `--list-presets` | List preset roles | - |
 
 ## 🛠️ Architecture
 
-Based on Claude Code's agent design patterns:
-
 ```
 src/debate_prd/
 ├── core/                 # Core debate system
 │   ├── messaging/        # Message passing (mailbox)
 │   ├── memory/           # Agent memory (project scope)
 │   ├── spawn/            # Debater agent creation
+│   ├── tools/            # Moderator intervention tools
 │   └── debate_loop.py    # Debate loop control
 ├── config/               # Configuration
 │   ├── presets.py        # Role presets
-│   └── settings.py       # LLM & system settings
-├── output/               # Output generation
-│   └ prd_generator.py   # PRD generator
-└── cli/                  # CLI entry points
-    ├── main.py           # Traditional CLI
-    ├── interactive.py    # Interactive REPL mode
-    ├── session.py        # Session state management
-    ├── commands/         # Slash command system
-    │   ├── base.py       # Command registry & handler
-    │   ├── help.py       # Help command
-    │   ├── config.py     # Config command
-    │   ├── presets.py    # Presets command
-    │   ├── status.py     # Status command
-    │   ├── start.py      # Start command
-    │   └── quit.py       # Quit command
-    ├── theme.py          # CLI color theme
-    └── formatting.py     # Rich output helpers
-```
-src/debate_prd/
-├── core/                 # Core debate system
-│   ├── messaging/        # Message passing (mailbox)
-│   ├── memory/           # Agent memory (project scope)
-│   ├── spawn/            # Debater agent creation
-│   └── debate_loop.py    # Debate loop control
-├── config/               # Configuration
-│   ├── presets.py        # Role presets
+│   ├── prompts.py        # Agent prompts
 │   └── settings.py       # LLM & system settings
 ├── output/               # Output generation
 │   └── prd_generator.py  # PRD generator
-└── cli/                  # CLI entry points
-    ├── main.py           # Traditional CLI
-    └── tui.py            # TUI interface
+└── cli/                  # CLI entry
+    ├── main.py           # Unified CLI
+    ├── theme.py          # Rosé Pine color theme
+    └── formatting.py     # Rich output helpers
 ```
 
 ## 📁 Memory System
@@ -146,28 +137,6 @@ Agents store memories in `.claude/agent-memory/`:
 ├── debater1_PM/MEMORY.md    # PM agent memory
 ├── debater2_Dev/MEMORY.md   # Dev agent memory
 ```
-
-## 🔧 CLI Options
-
-**debate-prd (CLI mode):**
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--api-key` | API Key | `$OPENAI_API_KEY` |
-| `--base-url` | API Base URL | `https://api.openai.com/v1` |
-| `--model` | Model name | `gpt-4o-mini` |
-| `--preset` | Role preset | `pm_vs_dev` |
-| `--topic` | Debate topic | Interactive input |
-| `--max-rounds` | Max debate rounds | `10` |
-| `--output-dir` | PRD output directory | `./output` |
-
-**debate-prd-interactive (REPL mode):**
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--preset` | Role preset | `pm_vs_dev` |
-| `--max-rounds` | Max debate rounds | `6` |
-| `--output-dir` | PRD output directory | `./output` |
 
 ## 🤝 Contributing
 
