@@ -480,12 +480,11 @@ class DebateModerator:
         self._state = ModeratorState.COMPLETE
 
     async def _run_debate_autonomous_stream(self, topic: str, prd_base: str = ""):
-        """自主辩论模式 - 消息驱动
+        """自由辩论模式 - 并发发表看法 + 自由反驳
 
-        核心改进：
-        - Agent主动轮询mailbox，收到消息立即反驳
-        - Moderator只负责监控和引导，不强制切换发言者
-        - PM先发言，收到消息立即反驳
+        流程：
+        1. 并发阶段：双方同时发表看法（asyncio.gather）
+        2. 自由辩论：谁有消息谁反驳（不强制轮流）
 
         Args:
             topic: 辩论议题
@@ -493,14 +492,42 @@ class DebateModerator:
         """
         recent_messages = []
 
-        async for event in self.debater1.start_debate_stream(topic, prd_base):
+        # === 阶段1：并发发表看法 ===
+        yield {"type": "sub_phase", "phase": "publish_view"}
+
+        # 使用队列收集事件，实现真正的并发输出
+        event_queue = asyncio.Queue()
+        completed_count = 0
+
+        async def run_pm():
+            async for event in self.debater1.publish_view(topic, prd_base):
+                await event_queue.put(("pm", event))
+
+        async def run_dev():
+            async for event in self.debater2.publish_view(topic, prd_base):
+                await event_queue.put(("dev", event))
+
+        # 启动并发任务
+        pm_task = asyncio.create_task(run_pm())
+        dev_task = asyncio.create_task(run_dev())
+
+        # 实时从队列取出事件并 yield
+        while completed_count < 2:
+            source, event = await event_queue.get()
             yield event
+
             if event.get("type") == "message_complete":
-                full_content = event["content"]
-                self._extract_prd_items(full_content)
+                completed_count += 1
+                self._extract_prd_items(event["content"])
                 self._debate_state.round_num += 1
-                self._extract_points(full_content)
-                recent_messages.append(full_content)
+                self._extract_points(event["content"])
+                recent_messages.append(event["content"])
+
+        # 等待任务完成
+        await asyncio.gather(pm_task, dev_task)
+
+        # === 阶段2：自由辩论 ===
+        yield {"type": "sub_phase", "phase": "free_debate"}
 
         while not self._debate_state.terminated:
             if self._check_termination():

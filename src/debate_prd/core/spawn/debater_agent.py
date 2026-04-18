@@ -160,6 +160,61 @@ class DebaterAgent:
             "content": full_content,
         }
 
+    async def publish_view(self, topic: str, prd_base: str = ""):
+        """独立发表看法（自由辩论模式）
+
+        与 start_debate_stream 类似，但语义更明确：
+        Agent 收到 PRD 后，独立发表自己的看法，不等待对方。
+
+        Args:
+            topic: 辩论议题
+            prd_base: PRD 基础版
+
+        Yields:
+            Token级事件字典
+        """
+        system_prompt = self._build_system_prompt()
+
+        prd_context = f"\n\n## PRD 基础版\n{prd_base}" if prd_base else ""
+        user_prompt = f"""
+议题: {topic}{prd_context}
+
+请作为{self.role}，阅读 PRD 基础版后发表你的看法。
+
+要求：
+1. 陈述你对 PRD 的整体评价（支持/质疑/部分同意）
+2. 列出你认为最重要的 2-3 个关注点或问题
+3. 对每个关注点提出具体建议或质疑
+4. 输出至少 1 个 [PRD_ITEM] 条目
+
+注意：你的对手 {self._opponent} 也在同时阅读这份 PRD 并发表看法。
+你们将进入自由辩论阶段，谁有观点就发言，不强制轮流。
+"""
+
+        full_content = ""
+        async for delta in self._call_llm_stream(system_prompt, user_prompt):
+            if delta.startswith("[STREAM_END:"):
+                continue
+            full_content += delta
+            yield {
+                "type": "token",
+                "speaker": self.name,
+                "role": self.role,
+                "delta": delta,
+                "color": self.config.color,
+            }
+
+        # 发送给对方
+        await self._send_to_opponent(full_content)
+        self._save_round_memory(topic, full_content, None)
+
+        yield {
+            "type": "message_complete",
+            "speaker": self.name,
+            "role": self.role,
+            "content": full_content,
+        }
+
     async def respond(self, topic: str, opponent_view: str) -> str:
         """回应对方观点
 

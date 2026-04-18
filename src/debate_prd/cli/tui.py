@@ -802,6 +802,14 @@ class DebateApp(App):
                     log.write(f"[#c4a7e7]━━━ 阶段: {phase} ━━━[/#c4a7e7]")
                     self.query_one("#status").update(f"● {phase}")
 
+                # 处理子阶段切换（自由辩论模式）
+                elif event_type == "sub_phase":
+                    sub_phase = event["phase"]
+                    if sub_phase == "publish_view":
+                        log.write(f"[#f6c177]◆ 双方并发发表看法[/#f6c177]")
+                    elif sub_phase == "free_debate":
+                        log.write(f"[#f6c177]◆ 进入自由辩论[/#f6c177]")
+
                 # 处理问答提示
                 elif event_type == "question_prompt":
                     category = event["category"]
