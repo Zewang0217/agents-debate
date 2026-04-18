@@ -23,6 +23,7 @@ dev = [
 
 [project.scripts]
 debate-prd = "debate_prd.cli.main:main"
+debate-prd-interactive = "debate_prd.cli.interactive:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
