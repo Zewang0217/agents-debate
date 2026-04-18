@@ -448,7 +448,7 @@ class DebateModerator:
         yield {
             "type": "moderator",
             "action": "debate_start",
-            "content": f"辩论开始，请双方基于立场发表观点。\n\nPRD 基础版：\n{self._prd_base[:500]}...",
+            "content": f"辩论开始，请双方基于立场发表观点。\n\nPRD 基础版：\n{self._prd_base}",
         }
 
         # 运行带引导的辩论
@@ -483,7 +483,7 @@ class DebateModerator:
         """自由辩论模式 - 并发发表看法 + 自由反驳
 
         流程：
-        1. 并发阶段：双方同时发表看法（asyncio.gather）
+        1. 并发阶段：双方同时发表看法（内部并发，输出依次展示）
         2. 自由辩论：谁有消息谁反驳（不强制轮流）
 
         Args:
@@ -492,39 +492,40 @@ class DebateModerator:
         """
         recent_messages = []
 
-        # === 阶段1：并发发表看法 ===
-        yield {"type": "sub_phase", "phase": "publish_view"}
+        # === 阶段1：并发发表看法（依次展示） ===
+        yield {"type": "sub_phase", "phase": "publish_view", "note": "依次展示"}
 
-        # 使用队列收集事件，实现真正的并发输出
-        event_queue = asyncio.Queue()
-        completed_count = 0
+        # 并发收集双方的完整发言
+        pm_events = []
+        dev_events = []
 
-        async def run_pm():
+        async def collect_pm():
             async for event in self.debater1.publish_view(topic, prd_base):
-                await event_queue.put(("pm", event))
+                pm_events.append(event)
 
-        async def run_dev():
+        async def collect_dev():
             async for event in self.debater2.publish_view(topic, prd_base):
-                await event_queue.put(("dev", event))
+                dev_events.append(event)
 
-        # 启动并发任务
-        pm_task = asyncio.create_task(run_pm())
-        dev_task = asyncio.create_task(run_dev())
+        # 并发执行
+        await asyncio.gather(collect_pm(), collect_dev())
 
-        # 实时从队列取出事件并 yield
-        while completed_count < 2:
-            source, event = await event_queue.get()
+        # 依次展示：先 PM，后 Dev
+        for event in pm_events:
             yield event
-
             if event.get("type") == "message_complete":
-                completed_count += 1
                 self._extract_prd_items(event["content"])
                 self._debate_state.round_num += 1
                 self._extract_points(event["content"])
                 recent_messages.append(event["content"])
 
-        # 等待任务完成
-        await asyncio.gather(pm_task, dev_task)
+        for event in dev_events:
+            yield event
+            if event.get("type") == "message_complete":
+                self._extract_prd_items(event["content"])
+                self._debate_state.round_num += 1
+                self._extract_points(event["content"])
+                recent_messages.append(event["content"])
 
         # === 阶段2：自由辩论 ===
         yield {"type": "sub_phase", "phase": "free_debate"}

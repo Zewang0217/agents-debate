@@ -177,8 +177,9 @@ async def run_debate(
             elif event_type == "sub_phase":
                 # 自由辩论模式的子阶段
                 sub_phase = event.get("phase", "")
+                note = event.get("note", "")
                 if sub_phase == "publish_view":
-                    console.print(f"[{COLORS.GOLD}]◆ 双方并发发表看法[/{COLORS.GOLD}]")
+                    console.print(f"[{COLORS.GOLD}]◆ 双方并发发表看法{f'（{note}）' if note else ''}[/{COLORS.GOLD}]")
                 elif sub_phase == "free_debate":
                     console.print(f"[{COLORS.GOLD}]◆ 进入自由辩论[/{COLORS.GOLD}]")
 
@@ -282,8 +283,9 @@ async def _clarification_loop(
 
             elif t == "sub_phase":
                 sub_phase = e.get("phase", "")
+                note = e.get("note", "")
                 if sub_phase == "publish_view":
-                    console.print(f"[{COLORS.GOLD}]◆ 双方并发发表看法[/{COLORS.GOLD}]")
+                    console.print(f"[{COLORS.GOLD}]◆ 双方并发发表看法{f'（{note}）' if note else ''}[/{COLORS.GOLD}]")
                 elif sub_phase == "free_debate":
                     console.print(f"[{COLORS.GOLD}]◆ 进入自由辩论[/{COLORS.GOLD}]")
 
