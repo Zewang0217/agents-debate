@@ -13,7 +13,7 @@ An innovative PRD generation system where two AI agents with different perspecti
 
 - **🤖 AI Debate System**: Two agents debate from different perspectives (PM vs Dev, Business vs Security, UX vs Architecture)
 - **💬 Message-based Architecture**: Agents communicate through message passing, enabling true "argument" style debates
-- **🧠 Memory System**: Each agent has persistent memory (project scope), learning from past debates
+- **🧠 Memory System**: Each agent has isolated memory per debate session (local scope), preventing cross-topic pollution
 - **🎯 Weighted Consensus Detection**: Automatically detects consensus or stalemate with weighted scoring (AGREE=1.0, PARTIAL_AGREE=0.5, DISAGREE=1.0)
 - **👤 User Intervention**: Moderator asks for user input on critical decisions or stalemates
 - **📝 Auto PRD Generation**: Markdown-formatted PRD output with categorized items and consensus analysis
@@ -49,11 +49,17 @@ export OPENAI_MODEL=deepseek-chat
 export OPENAI_API_KEY=ollama
 export OPENAI_BASE_URL=http://localhost:11434/v1
 export OPENAI_MODEL=llama3
+
+# Run after loading environment
+source .env && export OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL
 ```
 
 ### Run
 
 ```bash
+# Load environment variables first
+source .env && export OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL
+
 # Interactive Mode (Recommended) - Select preset, then enter topic
 debate-prd
 
@@ -130,13 +136,20 @@ src/debate_prd/
 
 ## 📁 Memory System
 
-Agents store memories in `.claude/agent-memory/`:
+Agents use **local scope** memory by default - each debate session starts fresh, preventing cross-topic pollution. Memory is stored in `.claude/agent-memory/`:
 
 ```
 .claude/agent-memory/
-├── debater1_PM/MEMORY.md    # PM agent memory
-├── debater2_Dev/MEMORY.md   # Dev agent memory
+├── debater1_PM/MEMORY.md    # PM agent memory (session-based)
+├── debater2_Dev/MEMORY.md   # Dev agent memory (session-based)
 ```
+
+**Note:** Previous `project scope` memory caused hallucination issues where agents referenced unrelated topics from past debates. Now each topic gets clean, isolated context.
+
+**Anti-Hallucination Features:**
+- Topic constraint enforcement in every agent response
+- Hallucination detection for off-topic references
+- Consensus validation against original topic
 
 ## 🤝 Contributing
 

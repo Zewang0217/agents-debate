@@ -13,7 +13,7 @@ English | [中文文档](./README_CN.md)
 
 - **🤖 AI 辩论系统**: 两个 Agent 从不同视角辩论（PM vs Dev、Business vs Security、UX vs Architecture）
 - **💬 消息传递架构**: Agent 通过消息互发实现真正的"吵架"式辩论
-- **🧠 记忆系统**: 每个 Agent 有持久化记忆（project scope），从历史辩论中学习
+- **🧠 记忆系统**: 每个 Agent 使用独立记忆（local scope），防止跨议题污染
 - **🎯 加权共识检测**: 自动检测共识或僵局，加权评分（AGREE=1.0, PARTIAL_AGREE=0.5, DISAGREE=1.0）
 - **👤 用户干预**: Moderator 在关键决策点或僵局时询问用户
 - **📝 自动 PRD 生成**: Markdown 格式输出，包含分类条目和共识分析
@@ -49,11 +49,17 @@ export OPENAI_MODEL=deepseek-chat
 export OPENAI_API_KEY=ollama
 export OPENAI_BASE_URL=http://localhost:11434/v1
 export OPENAI_MODEL=llama3
+
+# 运行前加载环境变量
+source .env && export OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL
 ```
 
 ### 运行
 
 ```bash
+# 先加载环境变量
+source .env && export OPENAI_API_KEY OPENAI_BASE_URL OPENAI_MODEL
+
 # 交互模式（推荐）- 先选预设，再输入议题
 debate-prd
 
@@ -132,13 +138,20 @@ src/debate_prd/
 
 ## 📁 记忆系统
 
-Agent 记忆存储在 `.claude/agent-memory/`：
+Agent 默认使用 **local scope** 记忆 - 每次辩论独立记忆，防止跨议题污染。记忆存储在 `.claude/agent-memory/`：
 
 ```
 .claude/agent-memory/
-├── debater1_PM/MEMORY.md    # PM Agent 记忆
-├── debater2_Dev/MEMORY.md   # Dev Agent 记忆
+├── debater1_PM/MEMORY.md    # PM Agent 记忆（会话级）
+├── debater2_Dev/MEMORY.md   # Dev Agent 记忆（会话级）
 ```
+
+**说明：** 之前的 `project scope` 记忆会导致幻觉问题，Agent 会引用历史辩论中的无关内容。现在每个议题都有干净、独立的上下文。
+
+**防幻觉机制：**
+- 每次发言强制议题约束检查
+- 幻觉检测：识别引用无关内容
+- 共识验证：确保共识与原始议题相关
 
 ## 🤝 贡献
 
