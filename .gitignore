@@ -43,6 +43,7 @@ output/
 !README.md
 !README_CN.md
 !CLAUDE.md
+!examples/*.md
 
 # Logs
 *.log

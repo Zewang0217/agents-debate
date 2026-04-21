@@ -19,6 +19,8 @@ English | [中文文档](./README_CN.md)
 - **📝 自动 PRD 生成**: Markdown 格式输出，包含分类条目和共识分析
 - **⚙️ 灵活的 LLM 支持**: 兼容任意 OpenAI 格式 API（OpenAI、DeepSeek、Claude、Ollama 等）
 
+**👉 [查看完整示例](./examples/aichat-sandbox-demo.md)** - "AIChat Sandbox 模式"议题的完整辩论过程
+
 ## 🚀 快速开始
 
 ### 安装（使用 uv）

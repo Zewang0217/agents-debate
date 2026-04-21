@@ -19,6 +19,8 @@ An innovative PRD generation system where two AI agents with different perspecti
 - **📝 Auto PRD Generation**: Markdown-formatted PRD output with categorized items and consensus analysis
 - **⚙️ Flexible LLM Support**: Compatible with any OpenAI-format API (OpenAI, DeepSeek, Claude, Ollama, etc.)
 
+**👉 [See Full Example](./examples/aichat-sandbox-demo.md)** - A complete debate session generating PRD for "AIChat Sandbox Mode"
+
 ## 🚀 Quick Start
 
 ### Installation (with uv)
