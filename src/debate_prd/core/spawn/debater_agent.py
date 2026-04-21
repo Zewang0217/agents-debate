@@ -78,8 +78,8 @@ class DebaterAgent:
         Returns:
             第一轮观点
         """
-        # 构建system prompt（包含记忆）
-        system_prompt = self._build_system_prompt()
+        # 构建system prompt（包含议题约束）
+        system_prompt = self._build_system_prompt(topic=topic)
 
         # 构建用户prompt
         user_prompt = f"""
@@ -116,7 +116,8 @@ class DebaterAgent:
         Yields:
             Token级事件字典
         """
-        system_prompt = self._build_system_prompt()
+        # 构建system prompt（包含议题约束和PRD基础版）
+        system_prompt = self._build_system_prompt(topic=topic, latest_prd=prd_base)
 
         # 构建用户prompt，包含PRD基础版
         prd_context = f"\n\n## PRD 基础版\n{prd_base}" if prd_base else ""
@@ -173,7 +174,8 @@ class DebaterAgent:
         Yields:
             Token级事件字典
         """
-        system_prompt = self._build_system_prompt()
+        # 构建system prompt（包含议题约束和PRD基础版）
+        system_prompt = self._build_system_prompt(topic=topic, latest_prd=prd_base)
 
         prd_context = f"\n\n## PRD 基础版\n{prd_base}" if prd_base else ""
         user_prompt = f"""
@@ -245,8 +247,8 @@ class DebaterAgent:
         # 检查是否有新消息
         messages = await self._mailbox.get_messages()
 
-        # 构建system prompt
-        system_prompt = self._build_system_prompt()
+        # 构建system prompt（包含议题约束）
+        system_prompt = self._build_system_prompt(topic=topic)
 
         # 构建用户prompt
         user_prompt = f"""
@@ -281,13 +283,14 @@ class DebaterAgent:
 
         return response
 
-    async def respond_stream(self, topic: str, opponent_view: str, prd_base: str = ""):
+    async def respond_stream(self, topic: str, opponent_view: str, prd_base: str = "", moderator_sync: str = ""):
         """回应对方观点 - 流式输出
 
         Args:
             topic: 辩论议题
             opponent_view: 对方观点
             prd_base: PRD 基础版（从澄清阶段生成）
+            moderator_sync: 中控同步信息（共识/分歧/引导）
 
         Yields:
             Token级事件字典
@@ -295,13 +298,15 @@ class DebaterAgent:
         # 检查是否有新消息
         messages = await self._mailbox.get_messages()
 
-        # 构建system prompt
-        system_prompt = self._build_system_prompt()
+        # 构建system prompt（包含议题约束和最新 PRD 状态）
+        # moderator_sync 包含完整共识/分歧列表，作为 latest_prd 参数
+        system_prompt = self._build_system_prompt(topic=topic, latest_prd=moderator_sync)
 
-        # 构建用户prompt，包含PRD基础版
+        # 构建用户prompt，包含PRD基础版和中控同步信息
         prd_context = f"\n\n## PRD 基础版\n{prd_base}" if prd_base else ""
+        sync_context = f"\n\n{moderator_sync}" if moderator_sync else ""
         user_prompt = f"""
-议题: {topic}{prd_context}
+议题: {topic}{prd_context}{sync_context}
 
 ## 对方观点（{self._opponent}）
 {opponent_view}
@@ -436,12 +441,49 @@ class DebaterAgent:
         except Exception as e:
             yield f"[{self.role}]: LLM调用出错: {e}"
 
-    def _build_system_prompt(self) -> str:
-        """构建系统提示词"""
+    def _build_system_prompt(self, topic: str = "", latest_prd: str = "") -> str:
+        """构建系统提示词
+
+        Args:
+            topic: 辩论议题（用于约束发言相关性）
+            latest_prd: 最新 PRD 状态（用于准确引用）
+
+        Returns:
+            系统提示词字符串
+        """
+        # 议题约束（最高优先级）
+        topic_constraint = ""
+        if topic:
+            topic_constraint = f"""
+## ⚠️ 核心约束（最高优先级）
+**原始议题：{topic}**
+
+所有发言必须紧扣原始议题。每次发言前自检：
+1. 我的观点是否直接与议题相关？
+2. 我引用的"对方观点"是否真实存在于对话历史或上方 PRD 中？
+3. 我是否在讨论原始议题的核心内容？
+
+如果偏离议题，立即纠正回到议题讨论。
+"""
+
+        # 最新 PRD 状态（如果提供）
+        prd_section = ""
+        if latest_prd:
+            prd_section = f"""
+## 当前最新 PRD 状态（实时更新）
+{latest_prd}
+
+**注意：**
+- ✅ 已锁定共识：不需要再讨论，直接使用
+- ⚠️ 当前分歧点：重点讨论，尝试达成共识或提出折中方案
+- 引用观点时，从上方 PRD 或对话历史中找依据，不要虚构
+"""
+
         # 基础身份
         base_prompt = f"""
 你是{self.role}，一个专业的辩论者。
-
+{topic_constraint}
+{prd_section}
 ## 你的立场
 {self.stance}
 
@@ -536,14 +578,14 @@ class DebaterAgent:
 def create_debater_pair(
     llm_client,
     preset_name: str = "pm_vs_dev",
-    memory_scope: MemoryScope = "project",
+    memory_scope: MemoryScope = "local",
 ) -> tuple[DebaterAgent, DebaterAgent]:
     """创建一对辩论者
 
     Args:
         llm_client: LLM客户端
         preset_name: 预设名称
-        memory_scope: 记忆scope
+        memory_scope: 记忆scope（默认local，防止跨议题污染）
 
     Returns:
         (debater1, debater2)

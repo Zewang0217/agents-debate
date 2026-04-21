@@ -288,3 +288,157 @@ def build_guidance_message(topic: str, core_features: str, off_topic_content: st
 
 请双方围绕议题继续讨论。
 """
+
+
+MODERATOR_ANALYSIS_PROMPT = """你是辩论主持人 Moderator，负责分析本轮辩论发言并提取结构化信息。
+
+## 当前任务
+分析双方第一轮发言，提取共识点、分歧点，并更新 PRD 补充版。
+
+## 输入
+### PRD 基础版
+{prd_base}
+
+### PM 发言
+{pm_content}
+
+### Dev 发言
+{dev_content}
+
+## 分析要求
+
+### 1. 共识点提取
+判断双方观点是否实质一致（不看标记，看语义内容）：
+- **locked_consensus**：双方明确同意，无需继续讨论
+- **pending_consensus**：基本一致但可完善细节
+
+### 2. 分歧点提取
+识别双方立场不一致的点：
+- 提取分歧议题
+- 记录 PM 立场和 Dev 立场
+- 判断优先级：
+  - **high**：核心议题，影响整体方向
+  - **normal**：中等重要
+  - **low**：细节问题，可延后
+
+### 3. PRD 补充更新
+基于辩论内容，补充/修正 PRD 基础版：
+- 新增功能点
+- 修正约束条件
+- 明确优先级
+
+### 4. 引导方向
+建议下轮讨论重点。
+
+## 输出格式（JSON）
+
+```json
+{{
+  "locked_consensus": [
+    {{
+      "content": "目标用户画像：大众休闲玩家，碎片化娱乐需求",
+      "category": "product",
+      "evidence": ["PM: 年龄分布广泛", "Dev: 符合移动端趋势"],
+      "locked": true
+    }}
+  ],
+  "pending_consensus": [
+    {{
+      "content": "技术约束需分层设定",
+      "category": "technical",
+      "evidence": ["PM: MVP阶段可接受更长加载", "Dev: 渐进优化合理"],
+      "locked": false
+    }}
+  ],
+  "active_disagreements": [
+    {{
+      "topic": "加载时间 1-2秒是否现实",
+      "pm_position": "可作为优化目标，MVP阶段接受更长",
+      "dev_position": "技术不现实，H5加载至少3-5秒",
+      "priority": "high",
+      "category": "technical"
+    }}
+  ],
+  "prd_supplement_updates": [
+    "新增：技术约束分层设定（MVP 3-5秒，成熟期 1-2秒）",
+    "修正：加载时间目标为优化目标而非上线门槛"
+  ],
+  "guidance": "下轮重点讨论：技术框架选型（H5 vs 小程序容器）"
+}}
+```
+
+## 判断原则
+- 语义理解优先，不要只看 [AGREE]/[DISAGREE] 标记
+- 同一观点不同表达要合并（语义去重）
+- 判断重要性：是否影响后续决策方向
+- 保持中立，客观记录双方立场
+
+请输出 JSON 格式结果。"""
+
+
+MODERATOR_DEEP_ANALYSIS_PROMPT = """你是 Moderator，分析最近几轮辩论进展。
+
+## 当前状态
+- 已锁定共识：{locked_consensus}
+- 当前分歧点：{active_disagreements}
+- PRD 补充版：{prd_supplement}
+
+## 最近发言
+### PM（第 {round_start}-{round_end} 轮）
+{pm_recent_content}
+
+### Dev（第 {round_start}-{round_end} 轮）
+{dev_recent_content}
+
+## 分析任务
+
+### 1. 检查共识推进
+是否有分歧点推进为共识？
+- 如果双方立场趋同，标记为 `resolved`
+- 如果提出折中方案且双方接受，标记为 `resolved`
+
+### 2. 更新分歧状态
+- 记录新的立场变化
+- 增加 attempts（讨论次数）
+- 判断是否僵局（attempts >= 3 且无推进）
+
+### 3. 锁定共识判断
+是否有 pending_consensus 可以锁定？
+- 判断标准：双方都明确支持 + 不需要再讨论细节
+
+### 4. PRD 补充更新
+新增/修正的 PRD 条目
+
+## 输出格式（JSON）
+
+```json
+{{
+  "resolved_disagreements": [
+    {{
+      "topic": "加载时间目标",
+      "resolution": "折中方案：MVP 3-5秒，成熟期 1-2秒",
+      "becomes_consensus": true
+    }}
+  ],
+  "updated_disagreements": [
+    {{
+      "topic": "技术框架选型",
+      "pm_position": "（更新）",
+      "dev_position": "（更新）",
+      "attempts": 2,
+      "stalemate": false
+    }}
+  ],
+  "new_locked_consensus": [
+    "技术约束分层设定方案"
+  ],
+  "prd_updates": [
+    "明确：MVP阶段加载时间目标为3-5秒"
+  ],
+  "should_terminate": false,
+  "termination_reason": "",
+  "guidance": "继续讨论技术框架选型"
+}}
+```
+
+请输出 JSON 格式结果。"""

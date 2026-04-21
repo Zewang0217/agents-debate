@@ -21,6 +21,7 @@ from .formatting import (
     print_brand_header,
     phase_separator,
     print_header,
+    format_round_summary,
 )
 from .theme import COLORS, PRIMARY, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY
 
@@ -367,6 +368,14 @@ async def run_debate(
                 await _handle_stalemate(event, moderator, preset, topic, output_dir, current_role_state)
                 return
 
+            elif event_type == "stalemate_intervention":
+                await _handle_stalemate_intervention(event, moderator, preset, topic, output_dir, current_role_state)
+                return
+
+            elif event_type == "critical_decision_intervention":
+                await _handle_critical_intervention(event, moderator, preset, topic, output_dir, current_role_state)
+                return
+
             elif event_type == "critical_decision_question":
                 await _handle_critical_decision(event, moderator, preset, topic, output_dir, current_role_state)
                 return
@@ -391,6 +400,9 @@ async def run_debate(
 
             elif event_type == "moderator_record":
                 _print_moderator_record(event, console)
+
+            elif event_type == "round_summary":
+                format_round_summary(event)
 
             elif event_type == "error":
                 status_error(event.get("message", "错误"))
@@ -478,8 +490,19 @@ async def _clarification_loop(
             elif t == "moderator_record":
                 _print_moderator_record(e, console)
 
+            elif t == "round_summary":
+                format_round_summary(e)
+
             elif t == "stalemate_question":
                 await _handle_stalemate(e, moderator, preset, topic, output_dir, current_role_state)
+                return "done"
+
+            elif t == "stalemate_intervention":
+                await _handle_stalemate_intervention(e, moderator, preset, topic, output_dir, current_role_state)
+                return "done"
+
+            elif t == "critical_decision_intervention":
+                await _handle_critical_intervention(e, moderator, preset, topic, output_dir, current_role_state)
                 return "done"
 
             elif t == "critical_decision_question":
@@ -631,6 +654,108 @@ async def _handle_critical_decision(event, moderator, preset, topic, output_dir,
             elif resume_type == "critical_decision_question":
                 await _handle_critical_decision(resume_event, moderator, preset, topic, output_dir, current_role_state)
                 return
+    else:
+        console.print(f"[{TEXT_MUTED}]已跳过[/{TEXT_MUTED}]")
+
+
+async def _handle_stalemate_intervention(event, moderator, preset, topic, output_dir, current_role_state):
+    """处理僵局干预（必须回答）"""
+    console.print()
+    console.print(f"[{COLORS.ROSE}]━━ 僵局干预 ━━[/{COLORS.ROSE}]")
+    console.print(f"[{TEXT_PRIMARY}]议题：{event.get('topic', '')}[/{TEXT_PRIMARY}]")
+    console.print(f"[{TEXT_SECONDARY}]PM立场：{event.get('pm_position', '')}[/{TEXT_SECONDARY}]")
+    console.print(f"[{TEXT_SECONDARY}]Dev立场：{event.get('dev_position', '')}[/{TEXT_SECONDARY}]")
+    console.print(f"[{COLORS.GOLD}]已僵持 {event.get('attempts', 0)} 轮，请给出决策[/{COLORS.GOLD}]")
+
+    options = event.get("options", [])
+    if options:
+        for i, opt in enumerate(options):
+            console.print(f"[{TEXT_MUTED}]  [{i+1}] {opt}[/{TEXT_MUTED}]")
+        console.print(f"[{TEXT_MUTED}]  [其他] 输入自定义回答[/{TEXT_MUTED}]")
+
+    answer_prompt = Text()
+    answer_prompt.append("您的决策", style=Style(color=PRIMARY, bold=True))
+    answer_prompt.append("> ", style=Style(color=COLORS.ROSE))
+    console.print(answer_prompt, end=" ")
+    answer = await asyncio.to_thread(input)
+
+    if options and answer.isdigit():
+        idx = int(answer) - 1
+        if 0 <= idx < len(options):
+            answer = options[idx]
+
+    # 注入用户决策
+    await moderator._inject_user_decision(answer, event.get("topic", ""))
+
+    console.print()
+    console.print(f"[{COLORS.PINE}]✓ 决策已注入：{answer}[/{COLORS.PINE}]")
+
+    # 继续辩论
+    async for resume_event in moderator.resume_debate():
+        resume_type = resume_event.get("type", "")
+        if resume_type == "intervention_applied":
+            console.print()
+            console.print(f"[{COLORS.PINE}]✓ 用户决策已注入：{resume_event.get('answer', '')}[/{COLORS.PINE}]")
+        elif resume_type == "debate_complete":
+            _show_complete(resume_event, preset, topic, output_dir)
+            return
+        elif resume_type == "token":
+            _print_token(resume_event, current_role_state, console)
+        elif resume_type == "message_complete":
+            _print_complete(console)
+        elif resume_type == "moderator_record":
+            _print_moderator_record(resume_event, console)
+        elif resume_type == "round_summary":
+            format_round_summary(resume_event)
+
+
+async def _handle_critical_intervention(event, moderator, preset, topic, output_dir, current_role_state):
+    """处理关键决策干预（可跳过）"""
+    console.print()
+    console.print(f"[{COLORS.GOLD}]━━ 关键决策干预 ━━[/{COLORS.GOLD}]")
+    console.print(f"[{TEXT_PRIMARY}]类别：{event.get('category', '')}[/{TEXT_PRIMARY}]")
+    console.print(f"[{TEXT_PRIMARY}]议题：{event.get('topic', '')}[/{TEXT_PRIMARY}]")
+    console.print(f"[{TEXT_SECONDARY}]PM立场：{event.get('pm_position', '')}[/{TEXT_SECONDARY}]")
+    console.print(f"[{TEXT_SECONDARY}]Dev立场：{event.get('dev_position', '')}[/{TEXT_SECONDARY}]")
+
+    options = event.get("options", [])
+    if options:
+        for i, opt in enumerate(options):
+            console.print(f"[{TEXT_MUTED}]  [{i+1}] {opt}[/{TEXT_MUTED}]")
+        console.print(f"[{TEXT_MUTED}]  [跳过] 按 Enter 跳过[/{TEXT_MUTED}]")
+
+    answer_prompt = Text()
+    answer_prompt.append("您的决策", style=Style(color=PRIMARY))
+    answer_prompt.append("> ", style=Style(color=COLORS.ROSE))
+    console.print(answer_prompt, end=" ")
+    answer = await asyncio.to_thread(input)
+
+    if answer.strip():
+        if options and answer.isdigit():
+            idx = int(answer) - 1
+            if 0 <= idx < len(options):
+                answer = options[idx]
+
+        # 注入用户决策
+        await moderator._inject_user_decision(answer, event.get("topic", ""))
+
+        console.print()
+        console.print(f"[{COLORS.PINE}]✓ 决策已注入：{answer}[/{COLORS.PINE}]")
+
+        # 继续辩论
+        async for resume_event in moderator.resume_debate():
+            resume_type = resume_event.get("type", "")
+            if resume_type == "debate_complete":
+                _show_complete(resume_event, preset, topic, output_dir)
+                return
+            elif resume_type == "token":
+                _print_token(resume_event, current_role_state, console)
+            elif resume_type == "message_complete":
+                _print_complete(console)
+            elif resume_type == "moderator_record":
+                _print_moderator_record(resume_event, console)
+            elif resume_type == "round_summary":
+                format_round_summary(resume_event)
     else:
         console.print(f"[{TEXT_MUTED}]已跳过[/{TEXT_MUTED}]")
 

@@ -19,6 +19,7 @@ from .messaging.mailbox import get_message_router, reset_message_router
 from .tools.ask_user import AskUserTool
 from .tools.moderator_tools import ModeratorTools
 from ..config.settings import Settings
+from ..config.prompts import MODERATOR_ANALYSIS_PROMPT, MODERATOR_DEEP_ANALYSIS_PROMPT
 
 
 def _clean_unicode(text: str) -> str:
@@ -51,6 +52,39 @@ class ModeratorState(Enum):
 
 
 @dataclass
+class ConsensusPoint:
+    """共识点"""
+    content: str                    # 共识内容描述
+    category: str = ""              # 类别：技术/产品/商业/用户体验
+    locked: bool = False            # 是否已锁定（不需要再讨论）
+    evidence: list[str] = field(default_factory=list)  # 来源证据
+    round_created: int = 0          # 创建轮次
+
+
+@dataclass
+class DisagreementPoint:
+    """分歧点"""
+    topic: str                      # 分歧议题
+    pm_position: str = ""           # PM 立场
+    dev_position: str = ""          # Dev 立场
+    priority: str = "normal"        # 优先级：high/normal/low
+    category: str = ""              # 类别
+    round_created: int = 0          # 创建轮次
+    attempts: int = 0               # 讨论尝试次数（僵局检测）
+    resolved: bool = False          # 是否已解决
+    resolution: str = ""            # 解决方案
+
+
+@dataclass
+class PRDItem:
+    """PRD 条目"""
+    content: str                    # 条目内容
+    source: str = ""                # 来源：consensus/pm/dev/moderator
+    status: str = "pending"         # 状态：pending/confirmed/disputed
+    category: str = ""              # 类别
+
+
+@dataclass
 class ClarificationState:
     """澄清状态"""
 
@@ -76,19 +110,34 @@ class GuidanceState:
 
 @dataclass
 class DebateState:
-    """辩论状态"""
+    """辩论状态 - 结构化共识/分歧"""
 
     round_num: int = 0
     terminated: bool = False
     termination_reason: str = ""
-    agree_points: list[str] = field(default_factory=list)  # [AGREE] 完全共识
-    partial_agree_points: list[str] = field(
-        default_factory=list
-    )  # [PARTIAL_AGREE] 部分共识
-    disagreement_points: list[str] = field(default_factory=list)  # [DISAGREE] 分歧
-    consensus_points: list[str] = field(default_factory=list)  # 保留用于兼容
-    prd_items: list[str] = field(default_factory=list)
-    stalemate_count: int = 0  # 连续无新观点轮数
+
+    # 新：结构化共识/分歧
+    locked_consensus: list[ConsensusPoint] = field(default_factory=list)
+    pending_consensus: list[ConsensusPoint] = field(default_factory=list)
+    active_disagreements: list[DisagreementPoint] = field(default_factory=list)
+
+    # 新：PRD 补充版
+    prd_supplement: str = ""
+    prd_items: list[PRDItem] = field(default_factory=list)
+
+    # 新：辩论简要历史
+    debate_summary: list[dict] = field(default_factory=list)
+    # [{"round": 1, "pm_key_points": [...], "dev_key_points": [...]}]
+
+    # 用户决策记录
+    user_decisions: list[dict] = field(default_factory=list)
+
+    # 保留：兼容旧字段（过渡期）
+    agree_points: list[str] = field(default_factory=list)
+    partial_agree_points: list[str] = field(default_factory=list)
+    disagreement_points: list[str] = field(default_factory=list)
+    consensus_points: list[str] = field(default_factory=list)
+    stalemate_count: int = 0
 
 
 class ClarificationModerator:
@@ -395,6 +444,358 @@ class DebateModerator:
         # 注册moderator邮箱
         self._mailbox = get_message_router().register_agent("moderator")
 
+    async def _analyze_first_round(self, pm_content: str, dev_content: str) -> dict:
+        """第一轮中控 LLM 分析
+
+        Args:
+            pm_content: PM 第一轮发言
+            dev_content: Dev 第一轮发言
+
+        Returns:
+            分析结果字典
+        """
+        if not self._llm_client:
+            return {}
+
+        prompt = MODERATOR_ANALYSIS_PROMPT.format(
+            prd_base=self._prd_base,
+            pm_content=pm_content,
+            dev_content=dev_content,
+        )
+
+        try:
+            response = await self._llm_client.chat.completions.create(
+                model=self._llm_client.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+            )
+            content = response.choices[0].message.content or ""
+            # 提取 JSON（可能被 markdown 包裹）
+            json_match = re.search(r"\{[\s\S]*\}", content)
+            if json_match:
+                result = json.loads(json_match.group())
+            else:
+                result = json.loads(content)
+
+            # 更新 DebateState
+            self._update_state_from_analysis(result, round_num=1)
+            return result
+
+        except Exception as e:
+            print(f"[Moderator] 第一轮分析出错: {e}")
+            return {}
+
+    def _update_state_from_analysis(self, analysis: dict, round_num: int):
+        """根据 LLM 分析结果更新 DebateState
+
+        Args:
+            analysis: LLM 分析返回的 JSON
+            round_num: 当前轮次
+        """
+        # 更新锁定共识
+        for item in analysis.get("locked_consensus", []):
+            point = ConsensusPoint(
+                content=item.get("content", ""),
+                category=item.get("category", ""),
+                locked=True,
+                evidence=item.get("evidence", []),
+                round_created=round_num,
+            )
+            if point.content and point not in self._debate_state.locked_consensus:
+                self._debate_state.locked_consensus.append(point)
+
+        # 更新待定共识
+        for item in analysis.get("pending_consensus", []):
+            point = ConsensusPoint(
+                content=item.get("content", ""),
+                category=item.get("category", ""),
+                locked=False,
+                evidence=item.get("evidence", []),
+                round_created=round_num,
+            )
+            if point.content and point not in self._debate_state.pending_consensus:
+                self._debate_state.pending_consensus.append(point)
+
+        # 更新分歧点
+        for item in analysis.get("active_disagreements", []):
+            disagreement = DisagreementPoint(
+                topic=item.get("topic", ""),
+                pm_position=item.get("pm_position", ""),
+                dev_position=item.get("dev_position", ""),
+                priority=item.get("priority", "normal"),
+                category=item.get("category", ""),
+                round_created=round_num,
+                attempts=0,
+            )
+            if disagreement.topic:
+                # 检查是否已存在相同分歧
+                existing = self._find_disagreement(disagreement.topic)
+                if existing:
+                    existing.pm_position = disagreement.pm_position
+                    existing.dev_position = disagreement.dev_position
+                else:
+                    self._debate_state.active_disagreements.append(disagreement)
+
+        # 更新 PRD 补充版
+        updates = analysis.get("prd_supplement_updates", [])
+        if updates:
+            self._debate_state.prd_supplement = "\n".join(updates)
+
+        # 兼容旧字段
+        for point in self._debate_state.locked_consensus:
+            if point.content not in self._debate_state.agree_points:
+                self._debate_state.agree_points.append(point.content)
+        for point in self._debate_state.pending_consensus:
+            if point.content not in self._debate_state.partial_agree_points:
+                self._debate_state.partial_agree_points.append(point.content)
+
+    def _find_disagreement(self, topic: str) -> Optional[DisagreementPoint]:
+        """查找已存在的分歧点
+
+        Args:
+            topic: 分歧议题
+
+        Returns:
+            已存在的分歧点或 None
+        """
+        for d in self._debate_state.active_disagreements:
+            if d.topic == topic or topic in d.topic or d.topic in topic:
+                return d
+        return None
+
+    def _build_moderator_sync(self) -> str:
+        """构建中控同步信息给 Debater（完整 PRD 状态）
+
+        Returns:
+            同步信息字符串
+        """
+        # 格式化已锁定共识
+        locked_text = ""
+        if self._debate_state.locked_consensus:
+            locked_text = "### ✅ 已锁定共识（无需讨论，直接使用）\n"
+            for p in self._debate_state.locked_consensus[-5:]:
+                locked_text += f"- {p.content}\n"
+
+        # 格式化待定共识
+        pending_text = ""
+        if self._debate_state.pending_consensus:
+            pending_text = "### ◐ 待定共识（可完善细节）\n"
+            for p in self._debate_state.pending_consensus[-3:]:
+                pending_text += f"- {p.content}\n"
+
+        # 格式化分歧点（重点）
+        disagreements_text = self._format_disagreements()
+
+        # 格式化 PRD 条目
+        prd_items_text = ""
+        if self._debate_state.prd_items:
+            prd_items_text = "### 📝 已提取 PRD 条目\n"
+            for item in self._debate_state.prd_items[-5:]:
+                prd_items_text += f"- {item}\n"
+
+        # 构建同步信息
+        sync_info = f"""[中控同步 - 第 {self._debate_state.round_num} 轮]
+
+## ⚠️ 议题提醒（必须遵守）
+原始议题：{self._topic}
+**禁止讨论与议题无关的内容。如有偏题，立即纠正。**
+
+## 最新 PRD 状态
+
+{locked_text}{pending_text}{prd_items_text}
+### ❌ 当前分歧点（重点讨论）
+{disagreements_text}
+
+## 引导方向
+请优先讨论分歧点，尝试提出折中方案。
+- 如果分歧点已讨论充分，提出新的 PRD 条目
+- 引用观点时从上方内容或对话历史中找依据，不要虚构
+
+## 发言要求
+[AGREE: xxx] - 你同意的观点（说明具体内容）
+[PARTIAL_AGREE: xxx] - 部分同意（说明保留意见）
+[DISAGREE: xxx] - 不同意（必须说明理由）
+[PRD_ITEM] xxx - PRD 条目建议
+"""
+        return sync_info
+
+    def _format_disagreements(self) -> str:
+        """格式化分歧点列表
+
+        Returns:
+            格式化后的分歧点文本
+        """
+        if not self._debate_state.active_disagreements:
+            return "暂无明确分歧点"
+
+        lines = []
+        for i, d in enumerate(self._debate_state.active_disagreements, 1):
+            if d.resolved:
+                continue
+            priority_mark = "[高优先]" if d.priority == "high" else "[中优先]" if d.priority == "normal" else "[低优先]"
+            lines.append(f"{i}. {priority_mark} {d.topic}")
+            if d.pm_position:
+                lines.append(f"   PM立场: {d.pm_position[:80]}")
+            if d.dev_position:
+                lines.append(f"   Dev立场: {d.dev_position[:80]}")
+            lines.append(f"   讨论次数: {d.attempts}")
+
+        return "\n".join(lines) if lines else "暂无明确分歧点"
+
+    def _quick_analyze_round(self, pm_content: str, dev_content: str) -> dict:
+        """快速分析 - 正则提取标记
+
+        Args:
+            pm_content: PM 本轮发言
+            dev_content: Dev 本轮发言
+
+        Returns:
+            分析结果字典
+        """
+        result = {
+            "new_agrees": [],
+            "new_disagrees": [],
+            "new_prd_items": [],
+            "progress_detected": False,
+        }
+
+        # 提取标记
+        agree_pattern = r"\[AGREE:([^\n\]]*(?:\][^\n\]]*)*)\]"
+        disagree_pattern = r"\[DISAGREE:([^\n\]]*(?:\][^\n\]]*)*)\]"
+        prd_pattern = r"\[PRD_ITEM\] ([^\n]+)"
+
+        for content in [pm_content, dev_content]:
+            agrees = re.findall(agree_pattern, content, re.DOTALL)
+            for match in agrees:
+                point = match.strip()
+                if point and point not in result["new_agrees"]:
+                    result["new_agrees"].append(point)
+
+            disagrees = re.findall(disagree_pattern, content, re.DOTALL)
+            for match in disagrees:
+                point = match.strip()
+                if point and point not in result["new_disagrees"]:
+                    result["new_disagrees"].append(point)
+
+            prd_items = re.findall(prd_pattern, content)
+            for item in prd_items:
+                if item.strip() and item.strip() not in result["new_prd_items"]:
+                    result["new_prd_items"].append(item.strip())
+
+        # 检测是否有实质性推进
+        progress_indicators = ["折中", "方案", "建议", "同意", "调整", "优化", "妥协"]
+        for content in [pm_content, dev_content]:
+            if any(indicator in content for indicator in progress_indicators):
+                result["progress_detected"] = True
+                break
+
+        return result
+
+    async def _deep_analyze_rounds(self, recent_rounds: int = 2) -> dict:
+        """深度分析 - LLM 语义理解（每 2-3 轮调用）
+
+        Args:
+            recent_rounds: 分析最近几轮
+
+        Returns:
+            分析结果字典
+        """
+        if not self._llm_client or not self._debate_state.debate_summary:
+            return {}
+
+        # 获取最近的辩论记录
+        recent = self._debate_state.debate_summary[-recent_rounds:]
+        if not recent:
+            return {}
+
+        pm_recent = "\n".join(r.get("pm_key_points", "") for r in recent)
+        dev_recent = "\n".join(r.get("dev_key_points", "") for r in recent)
+
+        locked_consensus_str = "\n".join(
+            [p.content for p in self._debate_state.locked_consensus]
+        )
+        active_disagreements_str = self._format_disagreements()
+
+        prompt = MODERATOR_DEEP_ANALYSIS_PROMPT.format(
+            locked_consensus=locked_consensus_str or "暂无",
+            active_disagreements=active_disagreements_str or "暂无",
+            prd_supplement=self._debate_state.prd_supplement[:500] or "暂无",
+            round_start=recent[0].get("round", 1),
+            round_end=recent[-1].get("round", self._debate_state.round_num),
+            pm_recent_content=pm_recent[:1000],
+            dev_recent_content=dev_recent[:1000],
+        )
+
+        try:
+            response = await self._llm_client.chat.completions.create(
+                model=self._llm_client.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+            )
+            content = response.choices[0].message.content or ""
+            json_match = re.search(r"\{[\s\S]*\}", content)
+            if json_match:
+                result = json.loads(json_match.group())
+                self._apply_deep_analysis_result(result)
+                return result
+        except Exception as e:
+            print(f"[Moderator] 深度分析出错: {e}")
+
+        return {}
+
+    def _apply_deep_analysis_result(self, result: dict):
+        """应用深度分析结果到状态
+
+        Args:
+            result: LLM 分析返回的 JSON
+        """
+        # 处理已解决的分歧
+        for item in result.get("resolved_disagreements", []):
+            topic = item.get("topic", "")
+            disagreement = self._find_disagreement(topic)
+            if disagreement:
+                disagreement.resolved = True
+                disagreement.resolution = item.get("resolution", "")
+                if item.get("becomes_consensus"):
+                    self._debate_state.locked_consensus.append(
+                        ConsensusPoint(
+                            content=disagreement.resolution,
+                            category=disagreement.category,
+                            locked=True,
+                            round_created=self._debate_state.round_num,
+                        )
+                    )
+
+        # 更新分歧状态
+        for item in result.get("updated_disagreements", []):
+            topic = item.get("topic", "")
+            disagreement = self._find_disagreement(topic)
+            if disagreement:
+                if item.get("pm_position"):
+                    disagreement.pm_position = item.get("pm_position")
+                if item.get("dev_position"):
+                    disagreement.dev_position = item.get("dev_position")
+                disagreement.attempts = item.get("attempts", disagreement.attempts)
+
+        # 添加新的锁定共识
+        for content in result.get("new_locked_consensus", []):
+            if content:
+                point = ConsensusPoint(
+                    content=content,
+                    locked=True,
+                    round_created=self._debate_state.round_num,
+                )
+                if point not in self._debate_state.locked_consensus:
+                    self._debate_state.locked_consensus.append(point)
+
+        # 更新 PRD 补充版
+        for update in result.get("prd_updates", []):
+            if update:
+                if self._debate_state.prd_supplement:
+                    self._debate_state.prd_supplement += f"\n{update}"
+                else:
+                    self._debate_state.prd_supplement = update
+
     async def run_full_debate_stream(self, topic: str):
         """完整流程流式输出
 
@@ -526,7 +927,7 @@ class DebateModerator:
             if event.get("type") == "message_complete":
                 self._extract_prd_items(event["content"])
                 self._debate_state.round_num += 1
-                self._extract_points(event["content"])
+                self._extract_points(event["content"], self._topic)
                 recent_messages.append(event["content"])
 
         for event in dev_events:
@@ -534,11 +935,26 @@ class DebateModerator:
             if event.get("type") == "message_complete":
                 self._extract_prd_items(event["content"])
                 self._debate_state.round_num += 1
-                self._extract_points(event["content"])
+                self._extract_points(event["content"], self._topic)
                 recent_messages.append(event["content"])
 
         # 并发阶段完成，展示记录汇总
         yield self._generate_moderator_record("并发发表看法完成")
+
+        # === 第一轮中控 LLM 分析 ===
+        pm_content = ""
+        dev_content = ""
+        for event in pm_events:
+            if event.get("type") == "message_complete":
+                pm_content = event.get("content", "")
+        for event in dev_events:
+            if event.get("type") == "message_complete":
+                dev_content = event.get("content", "")
+
+        if pm_content and dev_content and self._llm_client:
+            analysis_result = await self._analyze_first_round(pm_content, dev_content)
+            if analysis_result:
+                yield self._generate_round_summary(analysis_result)
 
         # === 阶段2：自由辩论 ===
         yield {"type": "sub_phase", "phase": "free_debate"}
@@ -548,6 +964,8 @@ class DebateModerator:
         prev_partial_count = len(self._debate_state.partial_agree_points)
         prev_disagree_count = len(self._debate_state.disagreement_points)
         record_interval = 2  # 每隔2轮展示记录
+        deep_analysis_interval = 3  # 每3轮深度分析
+        last_deep_analysis_round = self._debate_state.round_num
         last_record_round = self._debate_state.round_num
 
         while not self._debate_state.terminated:
@@ -559,14 +977,12 @@ class DebateModerator:
                 intervention = self._pending_user_intervention
                 self._pending_user_intervention = None
 
-                # 注入信息到双方 Agent mailbox
                 from .messaging.mailbox import send_to_agent
 
                 intervention_msg = f"[Moderator 补充信息]\n用户决策：{intervention['answer']}\n请基于此约束继续辩论。"
                 await send_to_agent("moderator", "debater1", intervention_msg)
                 await send_to_agent("moderator", "debater2", intervention_msg)
 
-                # 通知用户信息已注入
                 yield {
                     "type": "intervention_applied",
                     "answer": intervention["answer"],
@@ -586,25 +1002,32 @@ class DebateModerator:
             if self._check_termination():
                 break
 
-            if self._detect_off_topic(recent_messages[-3:], topic):
-                guidance = self._generate_guidance(
+            # 偏题/幻觉检测
+            detection = self._detect_off_topic(recent_messages[-3:], topic)
+            if detection["is_off_topic"] or detection["hallucination"]:
+                guidance = detection.get("guidance") or self._generate_guidance(
                     topic, recent_messages[-1] if recent_messages else ""
                 )
                 yield {
                     "type": "guidance",
                     "content": guidance,
-                    "severity": "warning",
+                    "severity": "warning" if detection["is_off_topic"] else "error",
                 }
                 self._guidance_state.off_topic_count += 1
 
+            # 构建中控同步信息
+            moderator_sync = self._build_moderator_sync()
+
             responded = False
+            pm_round_content = ""
+            dev_round_content = ""
             for debater in [self.debater1, self.debater2]:
                 messages = await debater._mailbox.get_messages()
                 if messages:
                     opponent_msg = messages[-1].content
                     full_content = ""
                     async for event in debater.respond_stream(
-                        topic, opponent_msg, prd_base
+                        topic, opponent_msg, prd_base, moderator_sync
                     ):
                         yield event
                         if event.get("type") == "message_complete":
@@ -617,19 +1040,46 @@ class DebateModerator:
                         recent_messages.append(full_content)
                         responded = True
 
-                        # 僉局检测：基于实质性推进判定
-                        if self._is_viewpoint_progressed(full_content):
+                        # 收集本轮内容用于分析
+                        if debater == self.debater1:
+                            pm_round_content = full_content
+                        else:
+                            dev_round_content = full_content
+
+                        # 快速分析
+                        quick_result = self._quick_analyze_round(
+                            pm_round_content, dev_round_content
+                        )
+                        if quick_result.get("progress_detected"):
                             self._debate_state.stalemate_count = 0
                         else:
                             self._debate_state.stalemate_count += 1
 
+                        # 更新分歧点 attempts
+                        for d in self._debate_state.active_disagreements:
+                            if not d.resolved:
+                                d.attempts += 1
+
             if not responded:
                 await asyncio.sleep(0.5)
             else:
+                # 记录本轮到辩论摘要
+                if pm_round_content or dev_round_content:
+                    self._debate_state.debate_summary.append({
+                        "round": self._debate_state.round_num,
+                        "pm_key_points": pm_round_content[:300],
+                        "dev_key_points": dev_round_content[:300],
+                    })
+
                 # 每隔指定轮数展示记录
                 if self._debate_state.round_num - last_record_round >= record_interval:
                     yield self._generate_moderator_record("自由辩论进展")
                     last_record_round = self._debate_state.round_num
+
+                # 每 2-3 轮深度分析
+                if self._debate_state.round_num - last_deep_analysis_round >= deep_analysis_interval:
+                    await self._deep_analyze_rounds(recent_rounds=deep_analysis_interval)
+                    last_deep_analysis_round = self._debate_state.round_num
 
                 # 关键决策检测
                 critical_decision = self._detect_critical_decision(recent_messages)
@@ -669,7 +1119,6 @@ class DebateModerator:
 
     async def _continue_free_debate(self):
         """继续自由辩论（内部方法）"""
-        # 使用相同的状态继续循环
         recent_messages = []
 
         # 僵局检测状态
@@ -677,6 +1126,8 @@ class DebateModerator:
         prev_partial_count = len(self._debate_state.partial_agree_points)
         prev_disagree_count = len(self._debate_state.disagreement_points)
         record_interval = 2
+        deep_analysis_interval = 3
+        last_deep_analysis_round = self._debate_state.round_num
         last_record_round = self._debate_state.round_num
 
         while not self._debate_state.terminated:
@@ -702,14 +1153,19 @@ class DebateModerator:
             if self._check_termination():
                 break
 
+            # 构建中控同步信息
+            moderator_sync = self._build_moderator_sync()
+
             responded = False
+            pm_round_content = ""
+            dev_round_content = ""
             for debater in [self.debater1, self.debater2]:
                 messages = await debater._mailbox.get_messages()
                 if messages:
                     opponent_msg = messages[-1].content
                     full_content = ""
                     async for event in debater.respond_stream(
-                        self._topic, opponent_msg, self._prd_base
+                        self._topic, opponent_msg, self._prd_base, moderator_sync
                     ):
                         yield event
                         if event.get("type") == "message_complete":
@@ -722,8 +1178,17 @@ class DebateModerator:
                         recent_messages.append(full_content)
                         responded = True
 
-                        # 僉局检测：基于实质性推进判定
-                        if self._is_viewpoint_progressed(full_content):
+                        # 收集本轮内容
+                        if debater == self.debater1:
+                            pm_round_content = full_content
+                        else:
+                            dev_round_content = full_content
+
+                        # 快速分析
+                        quick_result = self._quick_analyze_round(
+                            pm_round_content, dev_round_content
+                        )
+                        if quick_result.get("progress_detected"):
                             self._debate_state.stalemate_count = 0
                         else:
                             self._debate_state.stalemate_count += 1
@@ -731,9 +1196,22 @@ class DebateModerator:
             if not responded:
                 await asyncio.sleep(0.5)
             else:
+                # 记录本轮到辩论摘要
+                if pm_round_content or dev_round_content:
+                    self._debate_state.debate_summary.append({
+                        "round": self._debate_state.round_num,
+                        "pm_key_points": pm_round_content[:300],
+                        "dev_key_points": dev_round_content[:300],
+                    })
+
                 if self._debate_state.round_num - last_record_round >= record_interval:
                     yield self._generate_moderator_record("自由辩论进展")
                     last_record_round = self._debate_state.round_num
+
+                # 每 2-3 轮深度分析
+                if self._debate_state.round_num - last_deep_analysis_round >= deep_analysis_interval:
+                    await self._deep_analyze_rounds(recent_rounds=deep_analysis_interval)
+                    last_deep_analysis_round = self._debate_state.round_num
 
                 # 僵局检测
                 if (
@@ -785,6 +1263,74 @@ class DebateModerator:
             "consensus_score": consensus_score,
         }
 
+    def _generate_round_summary(self, analysis_result: dict = None) -> dict:
+        """生成第一轮辩论总结事件
+
+        Args:
+            analysis_result: LLM 分析结果（可选）
+
+        Returns:
+            辩论总结事件字典
+        """
+        # 构建总结内容
+        lines = ["━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        lines.append("📊 第一轮辩论总结")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        # 锁定共识
+        locked = self._debate_state.locked_consensus
+        if locked:
+            lines.append("")
+            lines.append("✅ 已达成共识（锁定）")
+            for point in locked:
+                lines.append(f"• {point.content}")
+
+        # 待定共识
+        pending = self._debate_state.pending_consensus
+        if pending:
+            lines.append("")
+            lines.append("◐ 基本共识（可完善）")
+            for point in pending:
+                lines.append(f"• {point.content}")
+
+        # 分歧点
+        disagreements = self._debate_state.active_disagreements
+        if disagreements:
+            lines.append("")
+            lines.append("❌ 当前分歧点")
+            for d in disagreements:
+                priority_mark = "[高优先]" if d.priority == "high" else ""
+                lines.append(f"• {priority_mark} {d.topic}")
+                if d.pm_position or d.dev_position:
+                    lines.append(f"  PM: {d.pm_position[:50]}")
+                    lines.append(f"  Dev: {d.dev_position[:50]}")
+
+        # PRD 补充
+        prd_updates = self._debate_state.prd_supplement
+        if prd_updates:
+            lines.append("")
+            lines.append("📝 PRD 补充更新")
+            for line in prd_updates.split("\n"):
+                if line.strip():
+                    lines.append(f"• {line.strip()}")
+
+        # 引导方向
+        if analysis_result and analysis_result.get("guidance"):
+            lines.append("")
+            lines.append(f"🎯 下轮引导：{analysis_result.get('guidance')}")
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        return {
+            "type": "round_summary",
+            "round": 1,
+            "content": "\n".join(lines),
+            "locked_count": len(locked),
+            "pending_count": len(pending),
+            "disagreement_count": len(disagreements),
+            "guidance": analysis_result.get("guidance", "") if analysis_result else "",
+        }
+
     def get_current_state(self) -> ModeratorState:
         """获取当前状态"""
         return self._state
@@ -821,7 +1367,25 @@ class DebateModerator:
             self._debate_state.termination_reason = "达到轮数上限"
             return True
 
-        # 计算共识得分（加权）
+        # 基于结构化状态的判断
+        locked_count = len(self._debate_state.locked_consensus)
+        pending_count = len(self._debate_state.pending_consensus)
+        active_disagreements = [d for d in self._debate_state.active_disagreements if not d.resolved]
+        high_priority_disagreements = [d for d in active_disagreements if d.priority == "high"]
+
+        # 条件1: 所有高优先分歧已解决
+        if locked_count >= 3 and len(high_priority_disagreements) == 0:
+            self._debate_state.terminated = True
+            self._debate_state.termination_reason = "核心分歧已解决"
+            return True
+
+        # 条件2: 共识覆盖度高（锁定共识数 >= 分歧数 * 2）
+        if locked_count >= len(active_disagreements) * 2 and locked_count >= 3:
+            self._debate_state.terminated = True
+            self._debate_state.termination_reason = "共识覆盖充分"
+            return True
+
+        # 兼容旧逻辑：基于 agree_points 计算
         agree_count = len(self._debate_state.agree_points)
         partial_count = len(self._debate_state.partial_agree_points)
         disagree_count = len(self._debate_state.disagreement_points)
@@ -829,19 +1393,18 @@ class DebateModerator:
         consensus_score = agree_count * 1.0 + partial_count * 0.5
         total_points = agree_count + partial_count + disagree_count
 
-        # 新逻辑: 核心议题共识覆盖率
         if total_points == 0:
             return False
 
         coverage_ratio = consensus_score / (total_points + 0.1)
 
-        # 条件1: 高共识覆盖 (>70%)
+        # 条件3: 高共识覆盖 (>70%)
         if coverage_ratio >= 0.7 and consensus_score >= 3:
             self._debate_state.terminated = True
             self._debate_state.termination_reason = "核心议题共识覆盖"
             return True
 
-        # 条件2: 充分辩论（轮数足够+观点充分）
+        # 条件4: 充分辩论（轮数足够+观点充分）
         if self._debate_state.round_num >= 6 and total_points >= 5:
             self._debate_state.terminated = True
             if disagree_count > agree_count:
@@ -850,13 +1413,158 @@ class DebateModerator:
                 self._debate_state.termination_reason = "共识为主-充分辩论"
             return True
 
-        # 条件3: 僵局（连续N轮观点无实质推进）
+        # 条件5: 僵局（连续N轮观点无实质推进）
         if self._debate_state.stalemate_count >= 2:
-            self._debate_state.terminated = True
-            self._debate_state.termination_reason = "辩论僵局"
-            return True
+            # 不直接终止，返回 False 让深度分析处理
+            return False
 
         return False
+
+    def _quick_check_termination(self) -> dict:
+        """快速终止检查 - 不调 LLM
+
+        Returns:
+            终止判断结果
+        """
+        result = {
+            "should_terminate": False,
+            "reason": "",
+        }
+
+        # 轮数上限
+        if self._debate_state.round_num >= self.settings.max_rounds:
+            result["should_terminate"] = True
+            result["reason"] = "达到轮数上限"
+            return result
+
+        # 检查高优先分歧僵局
+        active_disagreements = [d for d in self._debate_state.active_disagreements if not d.resolved]
+        high_priority_disagreements = [d for d in active_disagreements if d.priority == "high"]
+
+        if all(d.attempts >= 3 for d in high_priority_disagreements) and high_priority_disagreements:
+            # 触发用户干预，不直接终止
+            result["should_terminate"] = False
+            result["need_intervention"] = True
+            result["intervention_type"] = "stalemate"
+            result["disagreement"] = high_priority_disagreements[0]
+            return result
+
+        return result
+
+    def _generate_stalemate_intervention(self, disagreement: DisagreementPoint) -> dict:
+        """生成僵局干预事件
+
+        Args:
+            disagreement: 僵局的分歧点
+
+        Returns:
+            干预事件字典
+        """
+        return {
+            "type": "stalemate_intervention",
+            "topic": disagreement.topic,
+            "pm_position": disagreement.pm_position,
+            "dev_position": disagreement.dev_position,
+            "attempts": disagreement.attempts,
+            "question": f"双方在 [{disagreement.topic}] 上僵持 {disagreement.attempts} 轮，请给出你的倾向或决策：",
+            "options": [
+                "支持 PM 立场",
+                "支持 Dev 立场",
+                "折中方案",
+                "暂时搁置",
+            ],
+            "allow_skip": False,  # 僵局必须回答
+        }
+
+    def _generate_critical_decision_intervention(self, disagreement: DisagreementPoint) -> dict:
+        """生成关键决策干预事件
+
+        Args:
+            disagreement: 关键分歧点
+
+        Returns:
+            干预事件字典
+        """
+        CRITICAL_CATEGORIES = ["技术栈", "架构", "预算", "时间约束", "核心功能取舍"]
+
+        if disagreement.category not in CRITICAL_CATEGORIES:
+            return None
+
+        return {
+            "type": "critical_decision_intervention",
+            "topic": disagreement.topic,
+            "category": disagreement.category,
+            "pm_position": disagreement.pm_position,
+            "dev_position": disagreement.dev_position,
+            "question": f"关于 [{disagreement.category}] 的关键决策：{disagreement.topic}",
+            "options": self._get_decision_options(disagreement.category),
+            "allow_skip": True,  # 可以跳过
+        }
+
+    def _get_decision_options(self, category: str) -> list[str]:
+        """根据类别获取决策选项
+
+        Args:
+            category: 决策类别
+
+        Returns:
+            选项列表
+        """
+        options_map = {
+            "技术栈": ["React", "Vue", "Angular", "原生开发", "其他方案"],
+            "架构": ["微服务", "单体应用", "混合架构", "暂缓决策"],
+            "预算": ["充足投入", "保守预算", "分期投入", "暂缓决策"],
+            "时间约束": ["快速上线", "稳健推进", "分阶段交付", "暂缓决策"],
+            "核心功能取舍": ["保留核心", "简化范围", "分阶段实现", "暂缓决策"],
+        }
+        return options_map.get(category, ["支持 PM", "支持 Dev", "折中", "跳过"])
+
+    async def _inject_user_decision(self, decision: str, topic: str):
+        """注入用户决策到辩论流程
+
+        Args:
+            decision: 用户决策内容
+            topic: 分歧议题
+        """
+        # 1. 记录决策
+        self._debate_state.user_decisions.append({
+            "topic": topic,
+            "decision": decision,
+            "round": self._debate_state.round_num,
+        })
+
+        # 2. 发送给双方 Agent mailbox
+        from .messaging.mailbox import send_to_agent
+
+        injection_msg = f"""[Moderator 补充信息]
+
+用户针对 [{topic}] 做出决策：
+{decision}
+
+请基于此约束继续讨论，无需再争论此议题。
+"""
+        await send_to_agent("moderator", "debater1", injection_msg)
+        await send_to_agent("moderator", "debater2", injection_msg)
+
+        # 3. 更新分歧状态
+        disagreement = self._find_disagreement(topic)
+        if disagreement:
+            disagreement.resolved = True
+            disagreement.resolution = f"用户决策：{decision}"
+
+            # 4. 转为锁定共识
+            self._debate_state.locked_consensus.append(
+                ConsensusPoint(
+                    content=f"{topic}：{decision}",
+                    category=disagreement.category,
+                    locked=True,
+                    evidence=["用户决策"],
+                    round_created=self._debate_state.round_num,
+                )
+            )
+
+            # 兼容旧字段
+            self._debate_state.agree_points.append(f"{topic}：{decision}")
 
     def _is_viewpoint_progressed(self, full_content: str) -> bool:
         """判断观点是否有实质性推进
@@ -890,13 +1598,30 @@ class DebateModerator:
 
         return has_progress or has_new_prd
 
-    def _extract_points(self, content: str) -> None:
-        """从内容中提取共识点和分歧点（带去重，区分类型）"""
+    def _extract_points(self, content: str, topic: str = "") -> None:
+        """从内容中提取共识点和分歧点（带去重，区分类型，验证相关性）
+
+        Args:
+            content: 发言内容
+            topic: 辩论议题（用于验证相关性）
+        """
         import re
 
         # 清理流式标记 [STREAM_END:xxx] 或 [STREAM_END]
         content = re.sub(r"\[STREAM_END:[^\]]*\]", "", content)
         content = re.sub(r"\[STREAM_END\]", "", content)
+
+        # 提取议题关键词（用于相关性验证）
+        topic_keywords = set(self._extract_keywords(topic)) if topic else set()
+
+        def _is_relevant_to_topic(point: str) -> bool:
+            """验证共识点是否与议题相关"""
+            if not topic_keywords:
+                return True  # 无议题时默认接受
+            point_keywords = set(self._extract_keywords(point))
+            overlap = len(point_keywords & topic_keywords)
+            # 关键词重叠 >= 20% 视为相关
+            return overlap >= len(topic_keywords) * 0.2 or len(point_keywords) == 0
 
         # 改进正则：匹配完整内容（支持嵌套 ]）
         # 格式1: [AGREE:content] - 有具体内容，使用改进正则支持嵌套括号
@@ -915,9 +1640,11 @@ class DebateModerator:
         for match in agree_matches:
             point = match.strip()
             if point and point not in self._debate_state.agree_points:
-                self._debate_state.agree_points.append(point)
-                if point not in self._debate_state.consensus_points:
-                    self._debate_state.consensus_points.append(point)
+                # 验证相关性：只添加与议题相关的共识
+                if _is_relevant_to_topic(point):
+                    self._debate_state.agree_points.append(point)
+                    if point not in self._debate_state.consensus_points:
+                        self._debate_state.consensus_points.append(point)
 
         # AGREE - 完全共识（无内容时提取前后文）
         agree_no_content_matches = re.findall(agree_pattern_no_content, content)
@@ -926,9 +1653,11 @@ class DebateModerator:
             if context_match:
                 point = context_match.group(1).strip() or "同意"
                 if point not in self._debate_state.agree_points:
-                    self._debate_state.agree_points.append(point)
-                    if point not in self._debate_state.consensus_points:
-                        self._debate_state.consensus_points.append(point)
+                    # 验证相关性
+                    if _is_relevant_to_topic(point):
+                        self._debate_state.agree_points.append(point)
+                        if point not in self._debate_state.consensus_points:
+                            self._debate_state.consensus_points.append(point)
 
         # CONSENSUS - 完全共识（同AGREE处理）
         consensus_matches = re.findall(
@@ -937,9 +1666,11 @@ class DebateModerator:
         for match in consensus_matches:
             point = match.strip()
             if point and point not in self._debate_state.agree_points:
-                self._debate_state.agree_points.append(point)
-                if point not in self._debate_state.consensus_points:
-                    self._debate_state.consensus_points.append(point)
+                # 验证相关性
+                if _is_relevant_to_topic(point):
+                    self._debate_state.agree_points.append(point)
+                    if point not in self._debate_state.consensus_points:
+                        self._debate_state.consensus_points.append(point)
 
         consensus_no_content_matches = re.findall(consensus_pattern_no_content, content)
         for _ in consensus_no_content_matches:
@@ -947,9 +1678,11 @@ class DebateModerator:
             if context_match:
                 point = context_match.group(1).strip() or "共识"
                 if point not in self._debate_state.agree_points:
-                    self._debate_state.agree_points.append(point)
-                    if point not in self._debate_state.consensus_points:
-                        self._debate_state.consensus_points.append(point)
+                    # 验证相关性
+                    if _is_relevant_to_topic(point):
+                        self._debate_state.agree_points.append(point)
+                        if point not in self._debate_state.consensus_points:
+                            self._debate_state.consensus_points.append(point)
 
         # PARTIAL_AGREE - 部分共识（有内容）
         partial_matches = re.findall(
@@ -958,9 +1691,11 @@ class DebateModerator:
         for match in partial_matches:
             point = match.strip()
             if point and point not in self._debate_state.partial_agree_points:
-                self._debate_state.partial_agree_points.append(point)
-                if point not in self._debate_state.consensus_points:
-                    self._debate_state.consensus_points.append(point)
+                # 验证相关性
+                if _is_relevant_to_topic(point):
+                    self._debate_state.partial_agree_points.append(point)
+                    if point not in self._debate_state.consensus_points:
+                        self._debate_state.consensus_points.append(point)
 
         # PARTIAL_AGREE - 部分共识（无内容时提取前后文）
         partial_no_content_matches = re.findall(
@@ -971,9 +1706,11 @@ class DebateModerator:
             if context_match:
                 point = context_match.group(1).strip() or "部分认同"
                 if point not in self._debate_state.partial_agree_points:
-                    self._debate_state.partial_agree_points.append(point)
-                    if point not in self._debate_state.consensus_points:
-                        self._debate_state.consensus_points.append(point)
+                    # 验证相关性
+                    if _is_relevant_to_topic(point):
+                        self._debate_state.partial_agree_points.append(point)
+                        if point not in self._debate_state.consensus_points:
+                            self._debate_state.consensus_points.append(point)
 
         # 提取分歧点（DISAGREE）- 支持两种格式，改进正则支持嵌套括号
         disagree_pattern_with_content = r"\[DISAGREE:([^\n\]]*(?:\][^\n\]]*)*)\]"
@@ -1066,12 +1803,29 @@ class DebateModerator:
 
         return new_items
 
-    def _detect_off_topic(self, recent_msgs: list[str], topic: str) -> bool:
-        """偏题检测"""
-        if len(recent_msgs) < 2:
-            return False
+    def _detect_off_topic(self, recent_msgs: list[str], topic: str) -> dict:
+        """偏题检测（返回检测结果和建议）
 
-        # 关键词重叠检测
+        Args:
+            recent_msgs: 最近的消息列表
+            topic: 辩论议题
+
+        Returns:
+            检测结果字典，包含：
+            - is_off_topic: 是否偏题
+            - hallucination: 是否幻觉引用
+            - guidance: 纠正建议
+        """
+        result = {
+            "is_off_topic": False,
+            "hallucination": False,
+            "guidance": ""
+        }
+
+        if len(recent_msgs) < 1:
+            return result
+
+        # 1. 关键词检测（保留现有逻辑）
         topic_keywords = set(self._extract_keywords(topic))
 
         for msg in recent_msgs:
@@ -1080,9 +1834,71 @@ class DebateModerator:
 
             # 关键词重叠低于30%视为偏题
             if len(topic_keywords) > 0 and overlap < len(topic_keywords) * 0.3:
-                return True
+                result["is_off_topic"] = True
+                result["guidance"] = self._generate_guidance(topic, msg)
+                return result
 
-        return False
+        # 2. 幻觉检测（新增）
+        for msg in recent_msgs:
+            hallucinated = self._detect_hallucinated_reference(msg, topic)
+            if hallucinated:
+                result["hallucination"] = True
+                result["guidance"] = f"[警告] 你引用的观点「{hallucinated[:50]}」与议题无关，请核实后重新发言"
+                return result
+
+        return result
+
+    def _detect_hallucinated_reference(self, msg: str, topic: str) -> str | None:
+        """检测是否引用与议题无关的内容（幻觉检测）
+
+        检查 [AGREE: xxx] 或 [PARTIAL_AGREE: xxx] 或 "对方指出xxx" 等引用，
+        如果引用内容的关键词与议题无重叠，可能是幻觉。
+
+        Args:
+            msg: 发言内容
+            topic: 辩论议题
+
+        Returns:
+            如果检测到幻觉引用，返回引用内容；否则返回 None
+        """
+        # 匹配引用内容的正则
+        patterns = [
+            r"\[AGREE:\s*([^\]]+)\]",
+            r"\[PARTIAL_AGREE:\s*([^\]]+)\]",
+            r"对方.*指出[：:\s]*([^\n。]+)",
+            r"对方.*说[：:\s]*([^\n。]+)",
+            r"对方.*正确.*[：:\s]*([^\n。]+)",
+        ]
+
+        topic_keywords = set(self._extract_keywords(topic))
+
+        for pattern in patterns:
+            matches = re.findall(pattern, msg, re.DOTALL)
+            for match in matches:
+                referenced_content = match.strip()
+                if len(referenced_content) < 5:
+                    continue
+
+                # 提取引用内容的关键词
+                ref_keywords = set(self._extract_keywords(referenced_content))
+
+                # 如果引用内容关键词与议题无重叠，可能是幻觉
+                overlap = len(ref_keywords & topic_keywords)
+
+                # 额外检查：如果引用内容包含明显不相关的关键词（如"游戏"、"H5"等）
+                # 且议题中没有这些关键词，则视为幻觉
+                unrelated_keywords = {"游戏", "H5", "小程序", "微信", "手机", "移动端", "APP", "应用"}
+                topic_has_unrelated = any(kw in topic_keywords for kw in unrelated_keywords)
+                ref_has_unrelated = any(kw in ref_keywords for kw in unrelated_keywords)
+
+                if ref_has_unrelated and not topic_has_unrelated:
+                    return referenced_content
+
+                # 如果关键词完全无重叠且引用内容有明确主题，视为幻觉
+                if len(ref_keywords) > 0 and overlap == 0 and len(ref_keywords) >= 3:
+                    return referenced_content
+
+        return None
 
     def _extract_keywords(self, text: str) -> list[str]:
         """提取关键词"""

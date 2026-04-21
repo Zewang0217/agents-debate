@@ -169,3 +169,39 @@ def print_kv(key: str, value: str, key_color: str = PRIMARY) -> None:
     text.append(f"{key}: ", style=Style(color=key_color))
     text.append(value, style=Style(color=TEXT_PRIMARY))
     console.print(text)
+
+
+def format_round_summary(event: dict) -> None:
+    """展示第一轮辩论总结
+
+    Args:
+        event: 辩论总结事件字典
+    """
+    console.print()
+    content = event.get("content", "")
+
+    for line in content.split("\n"):
+        if line.startswith("━━"):
+            console.print(Text(line, style=Style(color=TEXT_MUTED)))
+        elif line.startswith("📊"):
+            console.print(Text(line, style=Style(color=PRIMARY, bold=True)))
+        elif line.startswith("✅"):
+            console.print(Text(line, style=Style(color=SUCCESS)))
+        elif line.startswith("•") and "锁定" not in line:
+            console.print(Text(line, style=Style(color=TEXT_PRIMARY)))
+        elif line.startswith("◐"):
+            console.print(Text(line, style=Style(color=WARNING)))
+        elif line.startswith("❌"):
+            console.print(Text(line, style=Style(color=ERROR)))
+        elif line.startswith("📝"):
+            console.print(Text(line, style=Style(color=INFO)))
+        elif line.startswith("🎯"):
+            console.print(Text(line, style=Style(color=COLORS.GOLD, bold=True)))
+        elif line.strip().startswith("PM:") or line.strip().startswith("Dev:"):
+            console.print(Text(line, style=Style(color=TEXT_SECONDARY)))
+        elif "[高优先]" in line:
+            console.print(Text(line, style=Style(color=ERROR, bold=True)))
+        else:
+            console.print(Text(line, style=Style(color=TEXT_PRIMARY)))
+
+    console.print()
