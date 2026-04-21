@@ -3,28 +3,46 @@
 提供 Moderator 检测关键决策点和僵局时主动向用户询问的能力：
 - ask_user_for_decision: 异步询问关键决策（技术栈、预算等）
 - resolve_stalemate: 僵局时停止辩论并强制询问用户看法
+- generate_insight: 生成行业大牛视角的专业见解
 """
 
 from dataclasses import dataclass, field
 from typing import Optional
 import asyncio
+import json
+import re
 
 
 @dataclass
 class UserDecisionRequest:
     """用户决策请求"""
-    question: str                 # 询问的问题
-    context: str = ""             # 决策背景说明
+
+    question: str  # 询问的问题
+    context: str = ""  # 决策背景说明
     options: list[str] = field(default_factory=list)  # 可选选项
-    allow_skip: bool = True       # 是否允许跳过
+    allow_skip: bool = True  # 是否允许跳过
 
 
 @dataclass
 class UserDecisionResponse:
     """用户决策回答"""
-    answer: str                   # 用户回答
-    selected_option: int = -1     # 选择的选项索引
-    skipped: bool = False         # 是否跳过
+
+    answer: str  # 用户回答
+    selected_option: int = -1  # 选择的选项索引
+    skipped: bool = False  # 是否跳过
+
+
+@dataclass
+class ModeratorInsight:
+    """中控见解"""
+
+    topic: str  # 分歧议题
+    industry_practice: str = ""  # 行业惯例
+    pm_risks: list[str] = field(default_factory=list)  # PM方案风险
+    dev_risks: list[str] = field(default_factory=list)  # Dev方案风险
+    compromise: str = ""  # 折中方案
+    recommendation: str = ""  # 建议倾向
+    reason: str = ""  # 原因
 
 
 class ModeratorTools:
@@ -35,9 +53,13 @@ class ModeratorTools:
         self._decision_response: Optional[str] = None
         self._decision_event: asyncio.Event = asyncio.Event()
 
-        self._stalemate_info: dict = {}      # 僵局信息
+        self._stalemate_info: dict = {}  # 僵局信息
         self._stalemate_response: Optional[str] = None
         self._stalemate_event: asyncio.Event = asyncio.Event()
+
+        self._insight_info: dict = {}  # 见解信息
+        self._insight_response: Optional[dict] = None
+        self._insight_event: asyncio.Event = asyncio.Event()
 
     def get_tools_schema(self) -> list[dict]:
         """返回所有 Tool Schema（供 LLM function calling）"""
@@ -58,21 +80,21 @@ class ModeratorTools:
                     "properties": {
                         "question": {
                             "type": "string",
-                            "description": "向用户询问的问题，如'技术栈倾向？React还是Vue？'"
+                            "description": "向用户询问的问题，如'技术栈倾向？React还是Vue？'",
                         },
                         "context": {
                             "type": "string",
-                            "description": "决策背景说明，如'PM倾向React，Dev倾向Vue'"
+                            "description": "决策背景说明，如'PM倾向React，Dev倾向Vue'",
                         },
                         "options": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "可选选项列表（如['React', 'Vue', 'Angular']）"
-                        }
+                            "description": "可选选项列表（如['React', 'Vue', 'Angular']）",
+                        },
                     },
-                    "required": ["question"]
-                }
-            }
+                    "required": ["question"],
+                },
+            },
         }
 
     def _get_resolve_stalemate_schema(self) -> dict:
@@ -87,20 +109,20 @@ class ModeratorTools:
                     "properties": {
                         "disagreement_topic": {
                             "type": "string",
-                            "description": "僵局议题，如'技术架构选择'"
+                            "description": "僵局议题，如'技术架构选择'",
                         },
                         "pm_position": {
                             "type": "string",
-                            "description": "PM 的立场摘要"
+                            "description": "PM 的立场摘要",
                         },
                         "dev_position": {
                             "type": "string",
-                            "description": "Dev 的立场摘要"
-                        }
+                            "description": "Dev 的立场摘要",
+                        },
                     },
-                    "required": ["disagreement_topic", "pm_position", "dev_position"]
-                }
-            }
+                    "required": ["disagreement_topic", "pm_position", "dev_position"],
+                },
+            },
         }
 
     # === ask_user_for_decision ===
@@ -224,3 +246,115 @@ class ModeratorTools:
         self._stalemate_info = {}
         self._stalemate_response = None
         self._stalemate_event.clear()
+        self._insight_info = {}
+        self._insight_response = None
+        self._insight_event.clear()
+
+    # === generate_insight ===
+
+    async def generate_insight(
+        self,
+        topic: str,
+        pm_position: str,
+        dev_position: str,
+        attempts: int,
+        llm_client,
+    ) -> ModeratorInsight:
+        """生成中控见解（行业大牛视角）
+
+        Args:
+            topic: 分歧议题
+            pm_position: PM 立场
+            dev_position: Dev 立场
+            attempts: 讨论次数
+            llm_client: LLM 客户端
+
+        Returns:
+            ModeratorInsight 见解对象
+        """
+        from ..config.prompts import MODERATOR_INSIGHT_PROMPT
+
+        self._insight_info = {
+            "topic": topic,
+            "pm_position": pm_position,
+            "dev_position": dev_position,
+            "attempts": attempts,
+        }
+
+        prompt = MODERATOR_INSIGHT_PROMPT.format(
+            topic=topic,
+            pm_position=pm_position[:200],
+            dev_position=dev_position[:200],
+            attempts=attempts,
+        )
+
+        try:
+            response = await llm_client.chat.completions.create(
+                model=llm_client.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+            )
+            content = response.choices[0].message.content or ""
+            json_match = re.search(r"\{[\s\S]*\}", content)
+            if json_match:
+                result = json.loads(json_match.group())
+                insight = ModeratorInsight(
+                    topic=topic,
+                    industry_practice=result.get("industry_practice", ""),
+                    pm_risks=result.get("pm_risks", []),
+                    dev_risks=result.get("dev_risks", []),
+                    compromise=result.get("compromise", ""),
+                    recommendation=result.get("recommendation", ""),
+                    reason=result.get("reason", ""),
+                )
+                self._insight_response = result
+                return insight
+        except Exception as e:
+            print(f"[ModeratorTools] 见解生成出错: {e}")
+
+        return ModeratorInsight(topic=topic)
+
+    def get_insight_info(self) -> dict:
+        """获取见解信息"""
+        return self._insight_info
+
+    def get_insight_response(self) -> Optional[dict]:
+        """获取见解响应"""
+        return self._insight_response
+
+    def format_insight(self, insight: ModeratorInsight) -> str:
+        """格式化见解为可读文本
+
+        Args:
+            insight: ModeratorInsight 对象
+
+        Returns:
+            格式化后的文本
+        """
+        lines = ["━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        lines.append("💡 Moderator 专业见解")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        if insight.industry_practice:
+            lines.append(f"📌 行业惯例：{insight.industry_practice}")
+
+        if insight.pm_risks:
+            lines.append("⚠️ PM 方案风险：")
+            for risk in insight.pm_risks[:3]:
+                lines.append(f"  - {risk}")
+
+        if insight.dev_risks:
+            lines.append("⚠️ Dev 方案风险：")
+            for risk in insight.dev_risks[:3]:
+                lines.append(f"  - {risk}")
+
+        if insight.compromise:
+            lines.append(f"🔄 折中方案：{insight.compromise}")
+
+        if insight.recommendation and insight.reason:
+            lines.append(f"🎯 建议倾向：{insight.recommendation}")
+            lines.append(f"   原因：{insight.reason}")
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        return "\n".join(lines)
