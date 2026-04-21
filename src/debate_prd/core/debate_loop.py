@@ -1224,6 +1224,23 @@ class DebateModerator:
                     yield stalemate_event
                     return
 
+        # === 辩论结束，进入综合阶段 ===
+        yield {"type": "moderator", "action": "debate_end", "content": "辩论结束，开始综合双方观点生成 PRD。"}
+
+        yield {"type": "phase_start", "phase": "synthesis"}
+        self._state = ModeratorState.SYNTHESIS
+
+        prd = self._generate_final_prd(self._topic)
+
+        yield {
+            "type": "debate_complete",
+            "prd": prd,
+            "rounds": self._debate_state.round_num,
+            "reason": self._debate_state.termination_reason,
+        }
+
+        self._state = ModeratorState.COMPLETE
+
     def _generate_moderator_record(self, phase: str) -> dict:
         """生成 Moderator 记录事件"""
         agree_count = len(self._debate_state.agree_points)
