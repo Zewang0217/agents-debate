@@ -10,16 +10,44 @@ Moderator作为LLM Agent，通过function calling调用ask_user Tool动态问答
 - 引入 DebateAnalyzer 进行 LLM 分析
 - 使用 logging 替代 print
 - Guard Clause 减少嵌套
+- 数据类拆分到 debate_state.py
+- ClarificationModerator 拆分到 clarification_moderator.py
 """
 
-from dataclasses import dataclass, field
-from enum import Enum
 from typing import Optional
 import asyncio
 import json
 import re
 import jieba
 
+from .debate_state import (
+    ModeratorState,
+    ConsensusPoint,
+    DisagreementPoint,
+    PRDItem,
+    ClarificationState,
+    PRDQuestioningState,
+    GuidanceState,
+    DebateState,
+)
+from .debate_points import (
+    update_state_from_analysis,
+    find_disagreement,
+    format_disagreements,
+    format_consensus,
+    format_disagreement,
+    categorize_prd_items,
+    apply_deep_analysis_result,
+)
+from .debate_analysis import (
+    quick_analyze_round,
+    detect_off_topic,
+    detect_hallucinated_reference,
+    extract_keywords,
+    detect_critical_decision,
+    get_decision_options,
+)
+from .clarification_moderator import ClarificationModerator
 from .spawn.debater_agent import DebaterAgent, create_debater_pair
 from .messaging.mailbox import get_message_router, reset_message_router
 from .tools.ask_user import AskUserTool
@@ -38,381 +66,11 @@ logger = get_logger("loop")
 
 
 def _clean_unicode(text: str) -> str:
-    """清理无效 Unicode 字符（surrogate 等）
-
-    Args:
-        text: 输入文本
-
-    Returns:
-        清理后的文本
-    """
-    # 移除 surrogate 字符 (U+D800 到 U+DFFF)
+    """清理无效 Unicode 字符"""
     text = re.sub(r"[\ud800-\udfff]", "", text)
-    # 移除其他无效控制字符
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
-    # 移除 Windows 换行符 \r
     text = text.replace("\r", "")
     return text
-
-
-class ModeratorState(Enum):
-    """中控状态机"""
-
-    CLARIFICATION = "clarification"  # Agent驱动的澄清阶段
-    PRD_QUESTIONING = "prd_questioning"  # PRD问答阶段
-    DEBATE = "debate"  # 辩论阶段
-    INTERVENTION = "intervention"  # 用户介入
-    SYNTHESIS = "synthesis"  # PRD综合
-    COMPLETE = "complete"  # 完成
-
-
-@dataclass
-class ConsensusPoint:
-    """共识点"""
-
-    content: str  # 共识内容描述
-    category: str = ""  # 类别：技术/产品/商业/用户体验
-    locked: bool = False  # 是否已锁定（不需要再讨论）
-    evidence: list[str] = field(default_factory=list)  # 来源证据
-    round_created: int = 0  # 创建轮次
-
-
-@dataclass
-class DisagreementPoint:
-    """分歧点"""
-
-    topic: str  # 分歧议题
-    pm_position: str = ""  # PM 立场
-    dev_position: str = ""  # Dev 立场
-    priority: str = "normal"  # 优先级：high/normal/low
-    category: str = ""  # 类别
-    round_created: int = 0  # 创建轮次
-    attempts: int = 0  # 讨论尝试次数（僵局检测）
-    resolved: bool = False  # 是否已解决
-    resolution: str = ""  # 解决方案
-
-
-@dataclass
-class PRDItem:
-    """PRD 条目"""
-
-    content: str  # 条目内容
-    source: str = ""  # 来源：consensus/pm/dev/moderator
-    status: str = "pending"  # 状态：pending/confirmed/disputed
-    category: str = ""  # 类别
-
-
-@dataclass
-class ClarificationState:
-    """澄清状态"""
-
-    messages: list = field(default_factory=list)  # 对话历史
-    collected_info: dict = field(default_factory=dict)  # 收集的信息
-    rounds: int = 0  # 问答轮数
-
-
-@dataclass
-class PRDQuestioningState:
-    """PRD问答状态"""
-
-    current_round: int = 0
-    answers: dict = field(default_factory=dict)
-
-
-@dataclass
-class GuidanceState:
-    """引导状态"""
-
-    off_topic_count: int = 0
-
-
-@dataclass
-class DebateState:
-    """辩论状态 - 结构化共识/分歧"""
-
-    round_num: int = 0
-    terminated: bool = False
-    termination_reason: str = ""
-
-    # 新：结构化共识/分歧
-    locked_consensus: list[ConsensusPoint] = field(default_factory=list)
-    pending_consensus: list[ConsensusPoint] = field(default_factory=list)
-    active_disagreements: list[DisagreementPoint] = field(default_factory=list)
-
-    # 新：PRD 补充版
-    prd_supplement: str = ""
-    prd_items: list[PRDItem] = field(default_factory=list)
-
-    # 新：辩论简要历史
-    debate_summary: list[dict] = field(default_factory=list)
-    # [{"round": 1, "pm_key_points": [...], "dev_key_points": [...]}]
-
-    # 用户决策记录
-    user_decisions: list[dict] = field(default_factory=list)
-
-    # 保留：兼容旧字段（过渡期）
-    agree_points: list[str] = field(default_factory=list)
-    partial_agree_points: list[str] = field(default_factory=list)
-    disagreement_points: list[str] = field(default_factory=list)
-    consensus_points: list[str] = field(default_factory=list)
-    stalemate_count: int = 0
-
-
-class ClarificationModerator:
-    """澄清主持人 - LLM Agent直接对话
-
-    流程：
-    1. 调用 LLM，生成问题文本
-    2. 如果问题结尾是问号或包含[QUESTION]，发出 ask 事件，然后暂停
-    3. CLI 处理用户输入，调用 submit_user_answer() 提交回答
-    4. CLI 再次调用 continue_clarification() 继续生成
-    5. 循环直到 [CLARIFICATION_DONE]
-    """
-
-    CLARIFICATION_PROMPT = """你是Moderator（主持人），负责澄清用户需求，通过多轮对话收集信息后生成PRD基础版。
-
-## 当前任务
-用户提出了一个议题，你需要通过多轮对话澄清需求细节。
-
-## 问答策略
-1. 从宏观开始：先问目标用户、核心问题
-2. 逐步深入：根据回答追问细节
-3. 每次只问一个问题，等待用户回答后再继续
-4. 适时总结：当收集足够信息后，输出[CLARIFICATION_DONE]并附带PRD基础版
-
-## 特殊意图识别
-**重要**：识别用户意图，主动响应：
-- 如果用户表达"跳过"、"直接开始"、"不用澄清"、"快速开始辩论"、"skip"等意图
-- 或用户表示"已经清楚了"、"需求明确"、"我知道要做什么"等自信表达
-- 立即输出[CLARIFICATION_DONE]并附上简短的PRD概要（基于议题关键词推断）
-
-示例用户表达：
-- "跳过澄清阶段，直接开始辩论"
-- "不用问了，直接开始"
-- "需求很清楚，开始辩论吧"
-- "skip"
-- "我已经知道要做什么了"
-
-响应方式：
-[CLARIFICATION_DONE]
-# PRD概要
-基于议题"{议题关键词}"快速启动辩论，具体细节将在辩论中完善。
-
-## 语言风格
-简洁直接，不废话
-
-## 输出标记
-- [QUESTION] - 表示需要用户回答
-- [CLARIFICATION_DONE] - 澄清完成，附带PRD基础版摘要
-"""
-
-    def __init__(self, llm_client, settings: Settings = None):
-        self._llm_client = llm_client
-        self._settings = settings or Settings()
-        self._state = ClarificationState()
-        self._last_question: str = ""  # 上一个问题（用于提交回答时关联）
-        self._topic: str = ""  # 辩论议题
-
-    def submit_user_answer(self, answer: str):
-        """提交用户回答
-
-        Args:
-            answer: 用户回答内容
-        """
-        # 清理无效字符
-        answer = _clean_unicode(answer)
-
-        # 添加用户回答到消息历史
-        self._state.messages.append({"role": "user", "content": answer})
-        self._state.rounds += 1
-        self._state.collected_info[f"问答{self._state.rounds}"] = {
-            "question": self._last_question,
-            "answer": answer,
-        }
-
-    async def start_clarification(self, topic: str):
-        """开始澄清阶段
-
-        Yields:
-            事件流，遇到 ask 时暂停
-        """
-        self._topic = topic
-        self._state.messages = [
-            {"role": "system", "content": self.CLARIFICATION_PROMPT},
-            {
-                "role": "user",
-                "content": f"议题: {topic}\n请开始澄清需求，每次只问一个问题。",
-            },
-        ]
-
-        yield {"type": "phase_start", "phase": "clarification", "topic": topic}
-
-        async for event in self._generate_next():
-            yield event
-
-    async def continue_clarification(self):
-        """继续澄清阶段（用户已提交回答后）
-
-        Yields:
-            事件流，遇到 ask 时暂停
-        """
-        async for event in self._generate_next():
-            yield event
-
-    async def _generate_next(self):
-        """生成下一个问题或结论
-
-        Yields:
-            事件流，遇到 ask 时发出事件并暂停
-        """
-        # 清理消息历史中的无效字符
-        cleaned_messages = []
-        for msg in self._state.messages:
-            cleaned_msg = {
-                "role": msg["role"],
-                "content": _clean_unicode(msg.get("content", ""))
-                if msg.get("content")
-                else None,
-            }
-            if msg.get("tool_calls"):
-                cleaned_msg["tool_calls"] = msg["tool_calls"]
-            if msg.get("tool_call_id"):
-                cleaned_msg["tool_call_id"] = msg["tool_call_id"]
-            cleaned_messages.append(cleaned_msg)
-
-        # 调用LLM
-        try:
-            response = await self._llm_client.chat.completions.create(
-                model=self._llm_client.model,
-                messages=cleaned_messages,
-                temperature=0.7,
-            )
-        except Exception as e:
-            yield {"type": "error", "message": f"LLM调用失败: {e}"}
-            return
-
-        content = response.choices[0].message.content or ""
-        # 清理 LLM 返回的内容
-        content = _clean_unicode(content)
-
-        # 添加到消息历史
-        self._state.messages.append({"role": "assistant", "content": content})
-
-        # 检查是否澄清完成
-        if "[CLARIFICATION_DONE]" in content:
-            yield {"type": "phase_start", "phase": "prd_generation"}
-            full_prd = ""
-            async for event in self._generate_prd_base_stream(topic=self._topic):
-                yield event
-                if event.get("type") == "prd_generated":
-                    full_prd = event.get("prd_base", "")
-
-            yield {
-                "type": "clarification_done",
-                "prd_base": full_prd,
-                "rounds": self._state.rounds,
-            }
-            return
-
-        # 检查是否包含问题标记
-        if (
-            "[QUESTION]" in content
-            or content.strip().endswith("？")
-            or content.strip().endswith("?")
-        ):
-            # 提取问题
-            question = content.replace("[QUESTION]", "").strip()
-            self._last_question = question
-
-            # 发出 ask 事件，暂停
-            yield {
-                "type": "ask",
-                "question": question,
-            }
-            return
-
-        # 如果不是问题也不是完成，直接输出并继续
-        yield {
-            "type": "moderator_message",
-            "content": content,
-        }
-        # 继续生成下一个
-        async for event in self._generate_next():
-            yield event
-
-    def _extract_prd_base(self, content: str) -> str:
-        """从澄清完成消息中提取PRD基础版"""
-        prd = content.replace("[CLARIFICATION_DONE]", "").strip()
-        if not prd or len(prd) < 50:
-            info = self._state.collected_info
-            lines = ["# PRD基础版\n"]
-            for key, value in info.items():
-                lines.append(
-                    f"## {key}\n问题: {value['question']}\n回答: {value['answer']}\n"
-                )
-            prd = "\n".join(lines)
-        return prd
-
-    async def _generate_prd_base_stream(self, topic: str):
-        """流式生成PRD基础版
-
-        Yields:
-            token级事件流
-        """
-        system_prompt = """你是专业的产品经理，负责生成PRD基础版。
-
-要求：
-1. 基于用户澄清阶段的信息生成完整的PRD基础版
-2. 包含：目标用户、核心功能、解决的问题、成功指标、约束条件
-3. 使用Markdown格式，清晰结构化
-4. 简洁精炼，控制在800字以内
-"""
-
-        collected_summary = "\n".join(
-            [
-                f"Q: {v['question']}\nA: {v['answer']}"
-                for k, v in self._state.collected_info.items()
-            ]
-        )
-
-        user_prompt = f"""
-议题: {topic}
-
-用户澄清信息:
-{collected_summary}
-
-请生成完整的PRD基础版。
-"""
-
-        full_prd = ""
-        try:
-            stream = await self._llm_client.chat.completions.create(
-                model=self._llm_client.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                stream=True,
-                temperature=0.7,
-                max_tokens=800,
-            )
-            async for delta in stream:
-                if delta.choices and delta.choices[0].delta.content:
-                    token = delta.choices[0].delta.content
-                    full_prd += token
-                    yield {
-                        "type": "token",
-                        "role": "Moderator",
-                        "delta": token,
-                    }
-        except Exception as e:
-            yield {"type": "error", "message": f"PRD生成失败: {e}"}
-            return
-
-        yield {
-            "type": "prd_generated",
-            "prd_base": full_prd,
-        }
 
 
 class DebateModerator:
@@ -505,82 +163,12 @@ class DebateModerator:
             return {}
 
     def _update_state_from_analysis(self, analysis: dict, round_num: int):
-        """根据 LLM 分析结果更新 DebateState
-
-        Args:
-            analysis: LLM 分析返回的 JSON
-            round_num: 当前轮次
-        """
-        # 更新锁定共识
-        for item in analysis.get("locked_consensus", []):
-            point = ConsensusPoint(
-                content=item.get("content", ""),
-                category=item.get("category", ""),
-                locked=True,
-                evidence=item.get("evidence", []),
-                round_created=round_num,
-            )
-            if point.content and point not in self._debate_state.locked_consensus:
-                self._debate_state.locked_consensus.append(point)
-
-        # 更新待定共识
-        for item in analysis.get("pending_consensus", []):
-            point = ConsensusPoint(
-                content=item.get("content", ""),
-                category=item.get("category", ""),
-                locked=False,
-                evidence=item.get("evidence", []),
-                round_created=round_num,
-            )
-            if point.content and point not in self._debate_state.pending_consensus:
-                self._debate_state.pending_consensus.append(point)
-
-        # 更新分歧点
-        for item in analysis.get("active_disagreements", []):
-            disagreement = DisagreementPoint(
-                topic=item.get("topic", ""),
-                pm_position=item.get("pm_position", ""),
-                dev_position=item.get("dev_position", ""),
-                priority=item.get("priority", "normal"),
-                category=item.get("category", ""),
-                round_created=round_num,
-                attempts=0,
-            )
-            if disagreement.topic:
-                # 检查是否已存在相同分歧
-                existing = self._find_disagreement(disagreement.topic)
-                if existing:
-                    existing.pm_position = disagreement.pm_position
-                    existing.dev_position = disagreement.dev_position
-                else:
-                    self._debate_state.active_disagreements.append(disagreement)
-
-        # 更新 PRD 补充版
-        updates = analysis.get("prd_supplement_updates", [])
-        if updates:
-            self._debate_state.prd_supplement = "\n".join(updates)
-
-        # 兼容旧字段
-        for point in self._debate_state.locked_consensus:
-            if point.content not in self._debate_state.agree_points:
-                self._debate_state.agree_points.append(point.content)
-        for point in self._debate_state.pending_consensus:
-            if point.content not in self._debate_state.partial_agree_points:
-                self._debate_state.partial_agree_points.append(point.content)
+        """更新辩论状态（委托到 debate_points 模块）"""
+        update_state_from_analysis(self._debate_state, analysis, round_num)
 
     def _find_disagreement(self, topic: str) -> Optional[DisagreementPoint]:
-        """查找已存在的分歧点
-
-        Args:
-            topic: 分歧议题
-
-        Returns:
-            已存在的分歧点或 None
-        """
-        for d in self._debate_state.active_disagreements:
-            if d.topic == topic or topic in d.topic or d.topic in topic:
-                return d
-        return None
+        """查找分歧点（委托到 debate_points 模块）"""
+        return find_disagreement(self._debate_state, topic)
 
     def _build_moderator_sync(self) -> str:
         """构建中控同步信息给 Debater（完整 PRD 状态）
@@ -639,120 +227,12 @@ class DebateModerator:
         return sync_info
 
     def _format_disagreements(self) -> str:
-        """格式化分歧点列表
-
-        Returns:
-            格式化后的分歧点文本
-        """
-        if not self._debate_state.active_disagreements:
-            return "暂无明确分歧点"
-
-        lines = []
-        for i, d in enumerate(self._debate_state.active_disagreements, 1):
-            if d.resolved:
-                continue
-            priority_mark = (
-                "[高优先]"
-                if d.priority == "high"
-                else "[中优先]"
-                if d.priority == "normal"
-                else "[低优先]"
-            )
-            lines.append(f"{i}. {priority_mark} {d.topic}")
-            if d.pm_position:
-                lines.append(f"   PM立场: {d.pm_position[:80]}")
-            if d.dev_position:
-                lines.append(f"   Dev立场: {d.dev_position[:80]}")
-            lines.append(f"   讨论次数: {d.attempts}")
-
-        return "\n".join(lines) if lines else "暂无明确分歧点"
+        """格式化分歧点（委托到 debate_points 模块）"""
+        return format_disagreements(self._debate_state)
 
     def _quick_analyze_round(self, pm_content: str, dev_content: str) -> dict:
-        """快速分析 - 正则提取标记
-
-        Args:
-            pm_content: PM 本轮发言
-            dev_content: Dev 本轮发言
-
-        Returns:
-            分析结果字典
-        """
-        result = {
-            "new_agrees": [],
-            "new_disagrees": [],
-            "new_prd_items": [],
-            "new_info": [],
-            "new_constraints": [],
-            "new_risks": [],
-            "new_scenarios": [],
-            "new_questions": [],
-            "progress_detected": False,
-        }
-
-        # 提取标记（原有）
-        agree_pattern = r"\[AGREE:([^\n\]]*(?:\][^\n\]]*)*)\]"
-        disagree_pattern = r"\[DISAGREE:([^\n\]]*(?:\][^\n\]]*)*)\]"
-        prd_pattern = r"\[PRD_ITEM\] ([^\n]+)"
-
-        # 新增标记提取
-        info_pattern = r"\[INFO\] ([^\n]+)"
-        constraint_pattern = r"\[CONSTRAINT\] ([^\n]+)"
-        risk_pattern = r"\[RISK\] ([^\n]+)"
-        scenario_pattern = r"\[SCENARIO\] ([^\n]+)"
-        question_pattern = r"\[QUESTION\] ([^\n]+)"
-
-        for content in [pm_content, dev_content]:
-            agrees = re.findall(agree_pattern, content, re.DOTALL)
-            for match in agrees:
-                point = match.strip()
-                if point and point not in result["new_agrees"]:
-                    result["new_agrees"].append(point)
-
-            disagrees = re.findall(disagree_pattern, content, re.DOTALL)
-            for match in disagrees:
-                point = match.strip()
-                if point and point not in result["new_disagrees"]:
-                    result["new_disagrees"].append(point)
-
-            prd_items = re.findall(prd_pattern, content)
-            for item in prd_items:
-                if item.strip() and item.strip() not in result["new_prd_items"]:
-                    result["new_prd_items"].append(item.strip())
-
-            # 新增标记提取
-            info_items = re.findall(info_pattern, content)
-            for item in info_items:
-                if item.strip() and item.strip() not in result["new_info"]:
-                    result["new_info"].append(item.strip())
-
-            constraint_items = re.findall(constraint_pattern, content)
-            for item in constraint_items:
-                if item.strip() and item.strip() not in result["new_constraints"]:
-                    result["new_constraints"].append(item.strip())
-
-            risk_items = re.findall(risk_pattern, content)
-            for item in risk_items:
-                if item.strip() and item.strip() not in result["new_risks"]:
-                    result["new_risks"].append(item.strip())
-
-            scenario_items = re.findall(scenario_pattern, content)
-            for item in scenario_items:
-                if item.strip() and item.strip() not in result["new_scenarios"]:
-                    result["new_scenarios"].append(item.strip())
-
-            question_items = re.findall(question_pattern, content)
-            for item in question_items:
-                if item.strip() and item.strip() not in result["new_questions"]:
-                    result["new_questions"].append(item.strip())
-
-        # 检测是否有实质性推进
-        progress_indicators = ["折中", "方案", "建议", "同意", "调整", "优化", "妥协"]
-        for content in [pm_content, dev_content]:
-            if any(indicator in content for indicator in progress_indicators):
-                result["progress_detected"] = True
-                break
-
-        return result
+        """快速分析（委托到 debate_analysis 模块）"""
+        return quick_analyze_round(pm_content, dev_content)
 
     async def _deep_analyze_rounds(self, recent_rounds: int = 2) -> dict:
         """深度分析 - LLM 语义理解（每 2-3 轮调用）
@@ -805,81 +285,10 @@ class DebateModerator:
         return {}
 
     def _apply_deep_analysis_result(self, result: dict):
-        """应用深度分析结果到状态
-
-        Args:
-            result: LLM 分析返回的 JSON
-        """
-        # 处理已解决的分歧
-        for item in result.get("resolved_disagreements", []):
-            topic = item.get("topic", "")
-            disagreement = self._find_disagreement(topic)
-            if disagreement:
-                disagreement.resolved = True
-                disagreement.resolution = item.get("resolution", "")
-                if item.get("becomes_consensus"):
-                    self._debate_state.locked_consensus.append(
-                        ConsensusPoint(
-                            content=disagreement.resolution,
-                            category=disagreement.category,
-                            locked=True,
-                            round_created=self._debate_state.round_num,
-                        )
-                    )
-
-        # 更新分歧状态
-        for item in result.get("updated_disagreements", []):
-            topic = item.get("topic", "")
-            disagreement = self._find_disagreement(topic)
-            if disagreement:
-                if item.get("pm_position"):
-                    disagreement.pm_position = item.get("pm_position")
-                if item.get("dev_position"):
-                    disagreement.dev_position = item.get("dev_position")
-                disagreement.attempts = item.get("attempts", disagreement.attempts)
-
-        # 添加新的锁定共识
-        for content in result.get("new_locked_consensus", []):
-            if content:
-                point = ConsensusPoint(
-                    content=content,
-                    locked=True,
-                    round_created=self._debate_state.round_num,
-                )
-                if point not in self._debate_state.locked_consensus:
-                    self._debate_state.locked_consensus.append(point)
-
-        # 更新 PRD 补充版
-        for update in result.get("prd_updates", []):
-            if update:
-                # V2 格式：带 section/confidence
-                if isinstance(update, dict):
-                    section = update.get("section", "核心功能")
-                    content = update.get("content", "")
-                    source = update.get("source", "moderator")
-                    confidence = update.get("confidence", "medium")
-                    round_num = update.get("round", self._debate_state.round_num)
-
-                    if content and self._prd_draft:
-                        self._prd_draft.add_item(
-                            section=section,
-                            content=content,
-                            source=source,
-                            round_num=round_num,
-                            confidence=confidence,
-                        )
-
-                    # 兼容旧格式：纯文本
-                    if self._debate_state.prd_supplement:
-                        self._debate_state.prd_supplement += f"\n{content}"
-                    else:
-                        self._debate_state.prd_supplement = content
-                else:
-                    # 兼容旧格式：纯字符串
-                    if self._debate_state.prd_supplement:
-                        self._debate_state.prd_supplement += f"\n{update}"
-                    else:
-                        self._debate_state.prd_supplement = update
+        """应用深度分析结果（委托到 debate_points 模块）"""
+        apply_deep_analysis_result(
+            self._debate_state, result, self._prd_draft, self._debate_state.round_num
+        )
 
     def _process_new_markers(self, quick_result: dict) -> None:
         """处理新增标记 - 添加到 PRD 草稿
@@ -1730,180 +1139,30 @@ class DebateModerator:
         return new_items
 
     def _detect_off_topic(self, recent_msgs: list[str], topic: str) -> dict:
-        """偏题检测（返回检测结果和建议）
-
-        Args:
-            recent_msgs: 最近的消息列表
-            topic: 辩论议题
-
-        Returns:
-            检测结果字典，包含：
-            - is_off_topic: 是否偏题
-            - hallucination: 是否幻觉引用
-            - guidance: 纠正建议
-        """
-        result = {"is_off_topic": False, "hallucination": False, "guidance": ""}
-
-        if len(recent_msgs) < 1:
-            return result
-
-        # 1. 关键词检测（保留现有逻辑）
-        topic_keywords = set(self._extract_keywords(topic))
-
-        for msg in recent_msgs:
-            msg_keywords = set(self._extract_keywords(msg))
-            overlap = len(topic_keywords & msg_keywords)
-
-            # 关键词重叠低于30%视为偏题
-            if len(topic_keywords) > 0 and overlap < len(topic_keywords) * 0.3:
-                result["is_off_topic"] = True
-                result["guidance"] = self._generate_guidance(topic, msg)
-                return result
-
-        # 2. 幻觉检测（新增）
-        for msg in recent_msgs:
-            hallucinated = self._detect_hallucinated_reference(msg, topic)
-            if hallucinated:
-                result["hallucination"] = True
-                result["guidance"] = (
-                    f"[警告] 你引用的观点「{hallucinated[:50]}」与议题无关，请核实后重新发言"
-                )
-                return result
-
+        """偏题检测（委托到 debate_analysis 模块）"""
+        result = detect_off_topic(recent_msgs, topic, self._extract_keywords)
+        if result["is_off_topic"] and result.get("msg"):
+            result["guidance"] = self._generate_guidance(topic, result.get("msg", ""))
         return result
 
     def _detect_hallucinated_reference(self, msg: str, topic: str) -> str | None:
-        """检测是否引用与议题无关的内容（幻觉检测）
-
-        检查 [AGREE: xxx] 或 [PARTIAL_AGREE: xxx] 或 "对方指出xxx" 等引用，
-        如果引用内容的关键词与议题无重叠，可能是幻觉。
-
-        Args:
-            msg: 发言内容
-            topic: 辩论议题
-
-        Returns:
-            如果检测到幻觉引用，返回引用内容；否则返回 None
-        """
-        # 匹配引用内容的正则
-        patterns = [
-            r"\[AGREE:\s*([^\]]+)\]",
-            r"\[PARTIAL_AGREE:\s*([^\]]+)\]",
-            r"对方.*指出[：:\s]*([^\n。]+)",
-            r"对方.*说[：:\s]*([^\n。]+)",
-            r"对方.*正确.*[：:\s]*([^\n。]+)",
-        ]
-
-        topic_keywords = set(self._extract_keywords(topic))
-
-        for pattern in patterns:
-            matches = re.findall(pattern, msg, re.DOTALL)
-            for match in matches:
-                referenced_content = match.strip()
-                if len(referenced_content) < 5:
-                    continue
-
-                # 提取引用内容的关键词
-                ref_keywords = set(self._extract_keywords(referenced_content))
-
-                # 如果引用内容关键词与议题无重叠，可能是幻觉
-                overlap = len(ref_keywords & topic_keywords)
-
-                # 额外检查：如果引用内容包含明显不相关的关键词（如"游戏"、"H5"等）
-                # 且议题中没有这些关键词，则视为幻觉
-                unrelated_keywords = {
-                    "游戏",
-                    "H5",
-                    "小程序",
-                    "微信",
-                    "手机",
-                    "移动端",
-                    "APP",
-                    "应用",
-                }
-                topic_has_unrelated = any(
-                    kw in topic_keywords for kw in unrelated_keywords
-                )
-                ref_has_unrelated = any(kw in ref_keywords for kw in unrelated_keywords)
-
-                if ref_has_unrelated and not topic_has_unrelated:
-                    return referenced_content
-
-                # 如果关键词完全无重叠且引用内容有明确主题，视为幻觉
-                if len(ref_keywords) > 0 and overlap == 0 and len(ref_keywords) >= 3:
-                    return referenced_content
-
-        return None
+        """幻觉检测（委托到 debate_analysis 模块）"""
+        return detect_hallucinated_reference(msg, topic, self._extract_keywords)
 
     def _extract_keywords(self, text: str) -> list[str]:
-        """提取关键词"""
-        # 使用jieba分词
-        words = jieba.cut(text)
-        # 过滤短词和停用词
-        keywords = [
-            w
-            for w in words
-            if len(w) > 1 and w not in ["的", "是", "有", "在", "和", "对", "为", "这"]
-        ]
-        return keywords[:20]  # 最多20个关键词
+        """提取关键词（委托到 debate_analysis 模块）"""
+        return extract_keywords(text)
 
     def _detect_critical_decision(self, recent_messages: list[str]) -> Optional[dict]:
-        """检测关键决策点
-
-        当辩论涉及以下内容且双方存在分歧时，应询问用户：
-        - 技术栈选择（React/Vue/Angular等）
-        - 预算/成本约束
-        - 时间约束（上线时间、开发周期）
-        - 团队规模/人力
-        - 架构方案（微服务/单体等）
-
-        Returns:
-            如果检测到关键决策点，返回决策信息；否则返回 None
-        """
-        CRITICAL_KEYWORDS = {
-            "技术栈": ["技术栈", "框架", "React", "Vue", "Angular", "Next.js", "Nuxt"],
-            "预算": ["预算", "成本", "费用", "投入", "资金"],
-            "时间": ["时间", "周期", "上线", "交付", "deadline", "截止"],
-            "团队": ["团队", "人力", "人员", "开发人员", "工程师"],
-            "架构": ["架构", "微服务", "单体", "分布式", "单体应用"],
-        }
-
-        if len(recent_messages) < 2:
-            return None
-
-        # 检查最近消息中是否包含关键决策关键词
-        recent_text = " ".join(recent_messages[-3:])
-
-        for category, keywords in CRITICAL_KEYWORDS.items():
-            for kw in keywords:
-                if kw.lower() in recent_text.lower():
-                    # 检查是否已询问过
-                    if category in self._asked_decisions:
-                        continue
-
-                    # 检查是否有分歧（双方都在讨论这个话题）
-                    if self._debate_state.disagreement_points:
-                        # 标记已询问
-                        self._asked_decisions.add(category)
-                        return {
-                            "category": category,
-                            "keyword": kw,
-                            "question": f"关于【{category}】，您的倾向或约束是什么？",
-                            "options": self._get_decision_options(category),
-                        }
-
-        return None
+        """检测关键决策点（委托到 debate_analysis 模块）"""
+        result = detect_critical_decision(recent_messages, self._asked_decisions)
+        if result and self._debate_state.disagreement_points:
+            result["options"] = self._get_decision_options(result["category"])
+        return result
 
     def _get_decision_options(self, category: str) -> list[str]:
-        """获取关键决策的默认选项"""
-        OPTIONS = {
-            "技术栈": ["React", "Vue", "其他框架", "无特定要求"],
-            "预算": ["低成本优先", "平衡成本与质量", "质量优先"],
-            "时间": ["1-3个月", "3-6个月", "6个月以上"],
-            "团队": ["1-3人", "3-5人", "5人以上"],
-            "架构": ["单体架构", "微服务", "混合架构"],
-        }
-        return OPTIONS.get(category, [])
+        """获取决策选项（委托到 debate_analysis 模块）"""
+        return get_decision_options(category)
 
     def _generate_stalemate_question(self) -> dict:
         """生成僵局询问
@@ -2014,72 +1273,16 @@ class DebateModerator:
 """
 
     def _categorize_prd_items(self, items: list[str]) -> str:
-        """分类PRD条目（产品/技术/运营）"""
-        if not items:
-            return "暂无"
-
-        # 关键词分类
-        product_keywords = [
-            "用户",
-            "目标",
-            "功能",
-            "体验",
-            "需求",
-            "价值",
-            "MVP",
-            "验证",
-        ]
-        tech_keywords = ["技术", "性能", "加载", "架构", "实现", "兼容", "优化", "指标"]
-        ops_keywords = ["运营", "推广", "数据", "留存", "增长", "商业化", "营收"]
-
-        product_items = []
-        tech_items = []
-        ops_items = []
-        other_items = []
-
-        for item in items:
-            item_lower = item.lower()
-            if any(kw in item_lower for kw in product_keywords):
-                product_items.append(item)
-            elif any(kw in item_lower for kw in tech_keywords):
-                tech_items.append(item)
-            elif any(kw in item_lower for kw in ops_keywords):
-                ops_items.append(item)
-            else:
-                other_items.append(item)
-
-        # 格式化输出
-        lines = []
-        if product_items:
-            lines.append("**产品相关:**")
-            for item in product_items[:5]:
-                lines.append(f"  - {item}")
-        if tech_items:
-            lines.append("**技术相关:**")
-            for item in tech_items[:5]:
-                lines.append(f"  - {item}")
-        if ops_items:
-            lines.append("**运营相关:**")
-            for item in ops_items[:5]:
-                lines.append(f"  - {item}")
-        if other_items:
-            lines.append("**其他:**")
-            for item in other_items[:3]:
-                lines.append(f"  - {item}")
-
-        return "\n".join(lines) if lines else "暂无"
+        """分类PRD条目（委托到 debate_points 模块）"""
+        return categorize_prd_items(items)
 
     def _format_consensus(self, points: list[str]) -> str:
-        """格式化共识点（使用 ✅ 标记）"""
-        if not points:
-            return "暂无"
-        return "\n".join(f"✅ {p[:100]}" for p in points[:6])
+        """格式化共识点（委托到 debate_points 模块）"""
+        return format_consensus(points)
 
     def _format_disagreement(self, points: list[str]) -> str:
-        """格式化分歧点（使用 ❌ 标记）"""
-        if not points:
-            return "暂无"
-        return "\n".join(f"❌ {p[:100]}" for p in points[:6])
+        """格式化分歧点（委托到 debate_points 模块）"""
+        return format_disagreement(points)
 
 
 async def run_debate(

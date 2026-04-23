@@ -1,5 +1,16 @@
 """辩论核心模块"""
 
+from .debate_state import (
+    ModeratorState,
+    ConsensusPoint,
+    DisagreementPoint,
+    PRDItem,
+    ClarificationState,
+    PRDQuestioningState,
+    GuidanceState,
+    DebateState,
+)
+
 from .memory.agent_memory import (
     MemoryScope,
     load_agent_memory,
@@ -24,8 +35,6 @@ from .spawn.debater_agent import (
 )
 
 from .debate_loop import (
-    ModeratorState,
-    ClarificationState,
     ClarificationModerator,
     run_debate,
     run_debate_stream,
@@ -39,6 +48,15 @@ from .tools.ask_user import (
 
 
 __all__ = [
+    # State
+    "ModeratorState",
+    "ConsensusPoint",
+    "DisagreementPoint",
+    "PRDItem",
+    "ClarificationState",
+    "PRDQuestioningState",
+    "GuidanceState",
+    "DebateState",
     # Memory
     "MemoryScope",
     "load_agent_memory",
@@ -57,8 +75,6 @@ __all__ = [
     "DebaterAgent",
     "create_debater_pair",
     # Loop
-    "ModeratorState",
-    "ClarificationState",
     "ClarificationModerator",
     "run_debate",
     "run_debate_stream",
